@@ -839,7 +839,7 @@ const seedTrips=()=>[
 const GAJI_CAT='gaji';
 function payDayInMonth(state,y,m){
   // m: 1-12. Cari transaksi gaji pada bulan kalender m/y.
-  const gaji=state.transactions.filter(t=>t.categoryId===GAJI_CAT && t.date.getFullYear()===y && t.date.getMonth()+1===m);
+  const gaji=state.transactions.filter(t=>t.categoryId===GAJI_CAT && t.date&&typeof t.date.getFullYear==='function' && t.date.getFullYear()===y && t.date.getMonth()+1===m);
   if(gaji.length){ // pakai yang paling awal
     const min=gaji.reduce((a,t)=>t.date<a.date?t:a);
     return new Date(min.date.getFullYear(),min.date.getMonth(),min.date.getDate());
@@ -886,7 +886,7 @@ function makeCalc(state){
   const isIncome=t=>{const c=catById(t.categoryId);return c&&c.type==='income';};
   // txInMonth kini = transaksi dalam PERIODE gajian bulan m/y
   const txInMonth=(y,m)=>{ const {start,end}=periodRange(state,y,m);
-    return state.transactions.filter(t=>{ const d=new Date(t.date.getFullYear(),t.date.getMonth(),t.date.getDate()); return d>=start&&d<=end; }); };
+    return state.transactions.filter(t=>{ if(!t.date||typeof t.date.getFullYear!=='function') return false; const d=new Date(t.date.getFullYear(),t.date.getMonth(),t.date.getDate()); return d>=start&&d<=end; }); };
   const totalIncome=(y,m)=>txInMonth(y,m).filter(isIncome).reduce((a,t)=>a+t.amount,0);
   const totalExpense=(y,m)=>txInMonth(y,m).filter(isExpense).reduce((a,t)=>a+t.amount,0);
   const kumulatif=()=>{let inc=0,exp=0;state.transactions.forEach(t=>{if(isIncome(t))inc+=t.amount;if(isExpense(t))exp+=t.amount;});return inc-exp;};
@@ -1200,6 +1200,10 @@ function rkAttachFirestore(FB,setState){
     unsubs.push(FB.onSnapshot(FB.collection(base,name),function(snap){
       var rows=[];
       snap.forEach(function(doc){ rows.push(rkDocToObj(doc.id,doc.data())); });
+      // Pertahanan: transaksi tanpa tanggal valid dibuang agar app tak crash.
+      if(name==='transactions'){
+        rows=rows.filter(function(r){ return r.date && typeof r.date.getFullYear==='function'; });
+      }
       setState(function(s){ var o={}; o[name]=rows; return {...s,...o}; });
     }));
   });

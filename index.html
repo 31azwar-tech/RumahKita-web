@@ -630,6 +630,36 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
 })();
 
 </script>
+<script type="module">
+  /* ================= FIREBASE (Bagian 6) ================= */
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc,
+           deleteDoc, addDoc, getDoc, Timestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyC1wLjxJbPC85-5aZvhEEj1flWtAjRM2uw",
+    authDomain: "rumahkita-45360.firebaseapp.com",
+    projectId: "rumahkita-45360",
+    storageBucket: "rumahkita-45360.firebasestorage.app",
+    messagingSenderId: "893752754981",
+    appId: "1:893752754981:web:3918f91d31deb67ac110cc"
+  };
+
+  const app  = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db   = getFirestore(app);
+
+  window.RKFB = {
+    auth, db,
+    signInWithEmailAndPassword, onAuthStateChanged, signOut,
+    collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, addDoc, getDoc, Timestamp,
+    familyId: "keluarga-azwar-dewi",
+  };
+  window.dispatchEvent(new Event("rkfb-ready"));
+</script>
 <script>
 /* =====================================================================
    RumahKita — Web App (model, seed, logika) — port dari Flutter Tahap 1–4

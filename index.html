@@ -705,8 +705,8 @@ const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Akun ---------------- */
 const ACCOUNTS=[
-  {key:'azwar',name:'Azwar',roleLabel:'Suami',accent:C.teal},
-  {key:'dewi', name:'Dewi', roleLabel:'Istri',accent:C.maroon},
+  {key:'azwar',name:'Azwar',roleLabel:'Suami',accent:C.teal, email:'azwar@rumahkita.app'},
+  {key:'dewi', name:'Dewi', roleLabel:'Istri',accent:C.maroon,email:'dewi@rumahkita.app'},
 ];
 const accountByKey = k => ACCOUNTS.find(a=>a.key===k);
 
@@ -1218,16 +1218,52 @@ function BrandMark({size=40}){
 function App(){
   const store=useStore();
   const [theme,setTheme]=useState('light');
-  const [screen,setScreen]=useState('splash'); // splash|picker|shell
+  const [screen,setScreen]=useState('splash'); // splash|login|shell
   const [account,setAccount]=useState(null);
+  const [fbReady,setFbReady]=useState(!!window.RKFB);
 
   useEffect(()=>{ document.body.setAttribute('data-theme',theme); },[theme]);
 
-  useEffect(()=>{ const t=setTimeout(()=>setScreen(s=>s==='splash'?'picker':s),1500); return ()=>clearTimeout(t); },[]);
+  // Tunggu SDK Firebase (script module) siap.
+  useEffect(()=>{
+    if(window.RKFB){ setFbReady(true); return; }
+    const on=()=>setFbReady(true);
+    window.addEventListener('rkfb-ready',on);
+    return ()=>window.removeEventListener('rkfb-ready',on);
+  },[]);
+
+  // Pantau status login. Setelah login, tentukan account dari members[uid].
+  useEffect(()=>{
+    if(!fbReady||!window.RKFB) return;
+    const {auth,onAuthStateChanged,doc,getDoc,db,familyId}=window.RKFB;
+    const unsub=onAuthStateChanged(auth, async(user)=>{
+      if(!user){ setAccount(null); setScreen('login'); return; }
+      let key=null;
+      try{
+        const snap=await getDoc(doc(db,'families',familyId));
+        const members=(snap.exists&&snap.exists())?snap.data().members:null;
+        if(members&&members[user.uid]) key=members[user.uid];
+      }catch(e){}
+      // fallback: cocokkan dari email bila members tak terbaca.
+      const acc=ACCOUNTS.find(a=>a.key===key)
+             || ACCOUNTS.find(a=>a.email===user.email)
+             || ACCOUNTS[0];
+      setAccount(acc); setScreen('shell');
+    });
+    return ()=>unsub&&unsub();
+  },[fbReady]);
+
+  // Splash hanya sampai Firebase siap menentukan status.
+  useEffect(()=>{
+    const t=setTimeout(()=>setScreen(s=>s==='splash'?'login':s),1800);
+    return ()=>clearTimeout(t);
+  },[]);
 
   if(screen==='splash') return h(Splash,null);
-  if(screen==='picker') return h(AccountPicker,{onPick:a=>{setAccount(a);setScreen('shell');}});
-  return h(Shell,{store,account,theme,setTheme,onLogout:()=>{setAccount(null);setScreen('picker');}});
+  if(screen==='login' || !account) return h(LoginFirebase,{fbReady});
+  return h(Shell,{store,account,theme,setTheme,onLogout:()=>{
+    try{ window.RKFB&&window.RKFB.signOut(window.RKFB.auth); }catch(e){}
+  }});
 }
 
 function Splash(){
@@ -1240,31 +1276,54 @@ function Splash(){
   ]);
 }
 
-function AccountPicker({onPick}){
+function LoginFirebase({fbReady}){
   const [pwFor,setPwFor]=useState(null);
   const [pw,setPw]=useState('');
-  const [err,setErr]=useState(false);
-  const submit=()=>{ if(pw==='1234'){onPick(pwFor);} else {setErr(true);} };
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+  const submit=async()=>{
+    if(!window.RKFB){ setErr('Firebase belum siap, coba lagi.'); return; }
+    if(!pw){ setErr('Kata sandi belum diisi.'); return; }
+    setBusy(true); setErr('');
+    try{
+      const {auth,signInWithEmailAndPassword}=window.RKFB;
+      await signInWithEmailAndPassword(auth, pwFor.email, pw);
+      // onAuthStateChanged di App akan otomatis pindah ke shell.
+    }catch(e){
+      const code=(e&&e.code)||'';
+      if(code.includes('wrong-password')||code.includes('invalid-credential'))
+        setErr('Kata sandi salah.');
+      else if(code.includes('user-not-found'))
+        setErr('Akun belum terdaftar di Firebase.');
+      else if(code.includes('too-many-requests'))
+        setErr('Terlalu banyak percobaan. Coba lagi nanti.');
+      else if(code.includes('network'))
+        setErr('Tidak ada koneksi internet.');
+      else setErr('Gagal masuk: '+code);
+      setBusy(false);
+    }
+  };
   return h('div',{style:{minHeight:'100vh',padding:'40px 22px',display:'flex',flexDirection:'column',justifyContent:'center'},className:'fadein'},[
     h('div',{key:'h',style:{textAlign:'center',marginBottom:30}},[
       h('div',{key:'b',style:{display:'flex',justifyContent:'center',marginBottom:14}},h(BrandMark,{size:56})),
       h('div',{key:'t',style:{fontSize:22,fontWeight:800}},'Siapa yang masuk?'),
       h('div',{key:'s',className:'muted',style:{marginTop:4}},'Pilih akun keluarga'),
     ]),
-    ...ACCOUNTS.map((a,i)=>h('div',{key:a.key,className:'acctcard fadein',style:{background:a.accent,marginBottom:14,cursor:'pointer',animationDelay:(i*.08)+'s'},onClick:()=>{setPwFor(a);setPw('');setErr(false);}},[
+    ...ACCOUNTS.map((a,i)=>h('div',{key:a.key,className:'acctcard fadein',style:{background:a.accent,marginBottom:14,cursor:'pointer',animationDelay:(i*.08)+'s'},onClick:()=>{setPwFor(a);setPw('');setErr('');}},[
       h('div',{key:'av',className:'avatar',style:{width:48,height:48,background:'rgba(255,255,255,.25)',fontSize:20}},a.name[0]),
       h('div',{key:'n'},[
         h('div',{key:'1',style:{fontWeight:800,fontSize:18}},a.name),
         h('div',{key:'2',style:{opacity:.85,fontSize:13}},a.roleLabel),
       ]),
     ])),
-    pwFor?h(Sheet,{key:'sh',open:true,onClose:()=>setPwFor(null)},[
+    pwFor?h(Sheet,{key:'sh',open:true,onClose:()=>{if(!busy)setPwFor(null);}},[
       h('div',{key:'t',style:{fontWeight:800,fontSize:18,marginBottom:4}},`Masuk sebagai ${pwFor.name}`),
-      h('div',{key:'s',className:'muted b-sm',style:{marginBottom:16}},'Masukkan kata sandi (awal: 1234)'),
-      h('input',{key:'i',className:'field',type:'password',value:pw,autoFocus:true,placeholder:'••••',
-        onChange:e=>{setPw(e.target.value);setErr(false);},onKeyDown:e=>{if(e.key==='Enter')submit();}}),
-      err?h('div',{key:'e',style:{color:C.expense,fontSize:12,marginTop:8}},'Kata sandi salah.'):null,
-      h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:16,padding:14},onClick:submit},'Masuk'),
+      h('div',{key:'s',className:'muted b-sm',style:{marginBottom:16}},pwFor.email),
+      h('input',{key:'i',className:'field',type:'password',value:pw,autoFocus:true,placeholder:'Kata sandi',
+        disabled:busy,onChange:e=>{setPw(e.target.value);setErr('');},onKeyDown:e=>{if(e.key==='Enter')submit();}}),
+      err?h('div',{key:'e',style:{color:C.expense,fontSize:12,marginTop:8}},err):null,
+      h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:16,padding:14,opacity:busy?.6:1},
+        disabled:busy,onClick:submit}, busy?'Memproses…':'Masuk'),
     ]):null,
   ]);
 }

@@ -1110,6 +1110,103 @@ function rkLoadState(){
     return {...base,...saved,settings:{...base.settings,...(saved.settings||{})}};
   }catch(e){ return rkDefaultState(); }
 }
+
+/* ================= FIRESTORE (Bagian 8: baca + seeding) ================= */
+// Koleksi yang disimpan sebagai sub-collection di families/{familyId}.
+var RK_COLLECTIONS=['categories','transactions','matrixItems','goals',
+  'eventCats','events','maintenance','journal','reflections','trips'];
+// Field berttipe tanggal per record (untuk konversi Timestamp <-> Date).
+var RK_DATE_FIELDS=['date','last','start','end','deadline'];
+
+// Timestamp Firestore -> Date JS (rekursif, aman utk nested).
+function rkTsToDate(v){
+  if(v==null) return v;
+  if(typeof v==='object' && typeof v.toDate==='function') return v.toDate();
+  return v;
+}
+function rkDocToObj(id,data){
+  var o={...data,id:id};
+  for(var i=0;i<RK_DATE_FIELDS.length;i++){
+    var f=RK_DATE_FIELDS[i];
+    if(o[f]!=null) o[f]=rkTsToDate(o[f]);
+  }
+  return o;
+}
+// Date JS -> Timestamp Firestore (untuk seeding/tulis).
+function rkObjToDoc(FB,obj){
+  var o={...obj};
+  for(var i=0;i<RK_DATE_FIELDS.length;i++){
+    var f=RK_DATE_FIELDS[i];
+    if(o[f] instanceof Date) o[f]=FB.Timestamp.fromDate(o[f]);
+  }
+  delete o.id; // id disimpan sebagai id dokumen, bukan field
+  return o;
+}
+
+// Isi Firestore dgn data awal HANYA jika masih kosong (sekali seumur hidup).
+async function rkSeedFirestore(FB){
+  var base=FB.doc(FB.db,'families',FB.familyId);
+  var seed=rkDefaultState();
+  // Cek penanda: jika sudah pernah seed, lewati.
+  var famSnap=await FB.getDoc(base);
+  var fam=(famSnap.exists&&famSnap.exists())?famSnap.data():{};
+  if(fam && fam.seeded) return false;
+
+  // 1) settings + penanda seeded pada dokumen family.
+  await FB.setDoc(base,{
+    settings:seed.settings,
+    seeded:true,
+  },{merge:true});
+
+  // 2) monthlyBudget (map key "YYYY-MM") -> koleksi.
+  var mb=seed.monthlyBudget||{};
+  for(var key in mb){ if(Object.prototype.hasOwnProperty.call(mb,key)){
+    await FB.setDoc(FB.doc(base,'monthlyBudget',key),{amount:mb[key]});
+  }}
+
+  // 3) koleksi lain (pakai id seed sbg id dokumen agar tautan tetap konsisten).
+  for(var c=0;c<RK_COLLECTIONS.length;c++){
+    var name=RK_COLLECTIONS[c];
+    var rows=seed[name]||[];
+    for(var r=0;r<rows.length;r++){
+      var row=rows[r];
+      var id=row.id||('x'+r);
+      await FB.setDoc(FB.doc(base,name,id),rkObjToDoc(FB,row));
+    }
+  }
+  return true;
+}
+
+// Pasang listener realtime: perubahan Firestore -> setState (2 HP sinkron).
+function rkAttachFirestore(FB,setState){
+  var base=FB.doc(FB.db,'families',FB.familyId);
+  var unsubs=[];
+
+  // dokumen family: settings.
+  unsubs.push(FB.onSnapshot(base,function(snap){
+    var d=(snap.exists&&snap.exists())?snap.data():null;
+    if(d&&d.settings) setState(function(s){ return {...s,settings:{...s.settings,...d.settings}}; });
+  }));
+
+  // monthlyBudget (koleksi) -> map.
+  unsubs.push(FB.onSnapshot(FB.collection(base,'monthlyBudget'),function(snap){
+    var mb={};
+    snap.forEach(function(doc){ var v=doc.data(); mb[doc.id]=v&&v.amount; });
+    setState(function(s){ return {...s,monthlyBudget:mb}; });
+  }));
+
+  // koleksi biasa.
+  RK_COLLECTIONS.forEach(function(name){
+    unsubs.push(FB.onSnapshot(FB.collection(base,name),function(snap){
+      var rows=[];
+      snap.forEach(function(doc){ rows.push(rkDocToObj(doc.id,doc.data())); });
+      setState(function(s){ var o={}; o[name]=rows; return {...s,...o}; });
+    }));
+  });
+
+  return function(){ unsubs.forEach(function(u){ try{u();}catch(e){} }); };
+}
+
 function useStore(){
   const [state,setState]=useState(rkLoadState);
   useEffect(()=>{
@@ -1117,6 +1214,33 @@ function useStore(){
     catch(e){}
   },[state]);
   const up=fn=>setState(s=>({...s,...fn(s)}));
+
+  // Bagian 8: saat Firebase & login siap → seed (sekali) lalu dengarkan Firestore.
+  useEffect(()=>{
+    var detach=null, alive=true;
+    function start(){
+      var FB=window.RKFB;
+      if(!FB) return;
+      // tunggu user login dulu (Rules butuh auth).
+      var off=FB.onAuthStateChanged(FB.auth, async function(user){
+        if(!user||!alive) return;
+        try{ await rkSeedFirestore(FB); }catch(e){ /* diamkan; listener tetap jalan */ }
+        if(!alive) return;
+        if(detach) detach();
+        detach=rkAttachFirestore(FB,setState);
+      });
+      return off;
+    }
+    var offAuth=null;
+    if(window.RKFB){ offAuth=start(); }
+    else{
+      var onReady=function(){ offAuth=start(); };
+      window.addEventListener('rkfb-ready',onReady);
+      var cleanupReady=function(){ window.removeEventListener('rkfb-ready',onReady); };
+      return function(){ alive=false; cleanupReady(); if(offAuth)offAuth(); if(detach)detach(); };
+    }
+    return function(){ alive=false; if(offAuth)offAuth(); if(detach)detach(); };
+  },[]);
 
   return {state,
     // transaksi

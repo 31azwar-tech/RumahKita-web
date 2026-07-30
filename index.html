@@ -1207,6 +1207,28 @@ function rkAttachFirestore(FB,setState){
   return function(){ unsubs.forEach(function(u){ try{u();}catch(e){} }); };
 }
 
+// ---- Helper TULIS ke Firestore (Bagian 9) ----
+// Semua fungsi ini "fire-and-forget": UI diperbarui optimistis oleh mutasi lokal,
+// lalu onSnapshot menyinkronkan ulang. Bila Firebase tak ada, tak melakukan apa-apa
+// (mode offline/localStorage).
+function rkFbBase(){ var FB=window.RKFB; return FB?FB.doc(FB.db,'families',FB.familyId):null; }
+function rkWriteDoc(coll,id,obj){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  try{ FB.setDoc(FB.doc(base,coll,id), rkObjToDoc(FB,obj)); }catch(e){}
+}
+function rkDeleteDoc(coll,id){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  try{ FB.deleteDoc(FB.doc(base,coll,id)); }catch(e){}
+}
+function rkWriteBudget(key,amount){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  try{ FB.setDoc(FB.doc(base,'monthlyBudget',key), {amount:amount}); }catch(e){}
+}
+function rkWriteSettings(settings){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  try{ FB.setDoc(base, {settings:settings}, {merge:true}); }catch(e){}
+}
+
 function useStore(){
   const [state,setState]=useState(rkLoadState);
   useEffect(()=>{
@@ -1244,91 +1266,156 @@ function useStore(){
 
   return {state,
     // transaksi
-    addTx:tx=>up(s=>({transactions:[{...tx,id:newId('t')},...s.transactions]})),
-    updateTx:tx=>up(s=>({transactions:s.transactions.map(t=>t.id===tx.id?tx:t)})),
-    deleteTx:id=>up(s=>({transactions:s.transactions.filter(t=>t.id!==id)})),
+    addTx:tx=>{ const id=newId('t'); const rec={...tx,id}; rkWriteDoc('transactions',id,rec);
+      up(s=>({transactions:[rec,...s.transactions]})); },
+    updateTx:tx=>{ rkWriteDoc('transactions',tx.id,tx);
+      up(s=>({transactions:s.transactions.map(t=>t.id===tx.id?tx:t)})); },
+    deleteTx:id=>{ rkDeleteDoc('transactions',id);
+      up(s=>({transactions:s.transactions.filter(t=>t.id!==id)})); },
     // kategori
-    addCat:c=>up(s=>({categories:[...s.categories,{...c,id:newId('c')}]})),
-    updateCat:c=>up(s=>({categories:s.categories.map(x=>x.id===c.id?c:x)})),
-    deleteCat:id=>up(s=>({categories:s.categories.filter(c=>c.id!==id)})),
+    addCat:c=>{ const id=newId('c'); const rec={...c,id}; rkWriteDoc('categories',id,rec);
+      up(s=>({categories:[...s.categories,rec]})); },
+    updateCat:c=>{ rkWriteDoc('categories',c.id,c);
+      up(s=>({categories:s.categories.map(x=>x.id===c.id?c:x)})); },
+    deleteCat:id=>{ rkDeleteDoc('categories',id);
+      up(s=>({categories:s.categories.filter(c=>c.id!==id)})); },
     // matrix
-    addMatrix:m=>up(s=>({matrixItems:[...s.matrixItems,{...m,id:newId('m')}]})),
-    updateMatrix:m=>up(s=>({matrixItems:s.matrixItems.map(x=>x.id===m.id?m:x)})),
-    deleteMatrix:id=>up(s=>({matrixItems:s.matrixItems.filter(m=>m.id!==id)})),
-    setBudget:(k,amt)=>up(s=>({monthlyBudget:{...s.monthlyBudget,[k]:amt}})),
+    addMatrix:m=>{ const id=newId('m'); const rec={...m,id}; rkWriteDoc('matrixItems',id,rec);
+      up(s=>({matrixItems:[...s.matrixItems,rec]})); },
+    updateMatrix:m=>{ rkWriteDoc('matrixItems',m.id,m);
+      up(s=>({matrixItems:s.matrixItems.map(x=>x.id===m.id?m:x)})); },
+    deleteMatrix:id=>{ rkDeleteDoc('matrixItems',id);
+      up(s=>({matrixItems:s.matrixItems.filter(m=>m.id!==id)})); },
+    setBudget:(k,amt)=>{ rkWriteBudget(k,amt);
+      up(s=>({monthlyBudget:{...s.monthlyBudget,[k]:amt}})); },
     // goals
-    addGoal:g=>up(s=>({goals:[...s.goals,{...g,id:newId('g')}]})),
-    updateGoal:g=>up(s=>({goals:s.goals.map(x=>x.id===g.id?g:x)})),
-    deleteGoal:id=>up(s=>({goals:s.goals.filter(g=>g.id!==id)})),
-    addSaving:(id,amt)=>up(s=>({goals:s.goals.map(g=>g.id===id?{...g,saved:g.saved+amt}:g)})),
+    addGoal:g=>{ const id=newId('g'); const rec={...g,id}; rkWriteDoc('goals',id,rec);
+      up(s=>({goals:[...s.goals,rec]})); },
+    updateGoal:g=>{ rkWriteDoc('goals',g.id,g);
+      up(s=>({goals:s.goals.map(x=>x.id===g.id?g:x)})); },
+    deleteGoal:id=>{ rkDeleteDoc('goals',id);
+      up(s=>({goals:s.goals.filter(g=>g.id!==id)})); },
+    addSaving:(id,amt)=>up(s=>{ const g=s.goals.find(x=>x.id===id);
+      if(g){ const ng={...g,saved:g.saved+amt}; rkWriteDoc('goals',id,ng); }
+      return {goals:s.goals.map(x=>x.id===id?{...x,saved:x.saved+amt}:x)}; }),
     // event cats
-    setEventCats:list=>up(()=>({eventCats:list})),
+    setEventCats:list=>{
+      var FB=window.RKFB, base=rkFbBase();
+      if(FB&&base){ list.forEach(function(ec){ if(ec&&ec.id) rkWriteDoc('eventCats',ec.id,ec); }); }
+      up(()=>({eventCats:list})); },
     // events (auto-sync ke Matrix bila biaya>0)
-    addEvent:e=>up(s=>{
+    addEvent:e=>{
       const id=newId('e'); const ev={...e,id,done:false};
-      let matrixItems=s.matrixItems;
-      if(e.biaya>0){ const mid=newId('m');
-        ev.matrixId=mid;
-        matrixItems=[...matrixItems,linkedMatrix(mid,ev.title,e.biaya,ev.date,'event',id)];
-      }
-      return {events:[...s.events,ev],matrixItems};
-    }),
+      let mItem=null;
+      if(e.biaya>0){ const mid=newId('m'); ev.matrixId=mid;
+        mItem=linkedMatrix(mid,ev.title,e.biaya,ev.date,'event',id); }
+      rkWriteDoc('events',id,ev);
+      if(mItem) rkWriteDoc('matrixItems',mItem.id,mItem);
+      up(s=>({events:[...s.events,ev],
+              matrixItems:mItem?[...s.matrixItems,mItem]:s.matrixItems}));
+    },
     updateEvent:e=>up(s=>{
       let matrixItems=[...s.matrixItems]; let matrixId=e.matrixId;
       const existing=matrixId?matrixItems.find(m=>m.id===matrixId):null;
+      let writeMatrix=null, delMatrixId=null;
       if(e.biaya>0){
-        if(existing){ matrixItems=matrixItems.map(m=>m.id===matrixId?{...m,title:e.title,amount:e.biaya,year:e.date.getFullYear(),month:e.date.getMonth()+1}:m); }
-        else { matrixId=newId('m'); matrixItems=[...matrixItems,linkedMatrix(matrixId,e.title,e.biaya,e.date,'event',e.id)]; }
-      } else if(existing){ matrixItems=matrixItems.filter(m=>m.id!==matrixId); matrixId=undefined; }
+        if(existing){ const nm={...existing,title:e.title,amount:e.biaya,year:e.date.getFullYear(),month:e.date.getMonth()+1};
+          matrixItems=matrixItems.map(m=>m.id===matrixId?nm:m); writeMatrix=nm; }
+        else { matrixId=newId('m'); const nm=linkedMatrix(matrixId,e.title,e.biaya,e.date,'event',e.id);
+          matrixItems=[...matrixItems,nm]; writeMatrix=nm; }
+      } else if(existing){ delMatrixId=matrixId; matrixItems=matrixItems.filter(m=>m.id!==matrixId); matrixId=undefined; }
       const ev={...e,matrixId};
+      rkWriteDoc('events',ev.id,ev);
+      if(writeMatrix) rkWriteDoc('matrixItems',writeMatrix.id,writeMatrix);
+      if(delMatrixId) rkDeleteDoc('matrixItems',delMatrixId);
       return {events:s.events.map(x=>x.id===e.id?ev:x),matrixItems};
     }),
     deleteEvent:id=>up(s=>{ const ev=s.events.find(x=>x.id===id);
+      rkDeleteDoc('events',id);
+      if(ev&&ev.matrixId) rkDeleteDoc('matrixItems',ev.matrixId);
       return {events:s.events.filter(x=>x.id!==id),
               matrixItems:ev&&ev.matrixId?s.matrixItems.filter(m=>m.id!==ev.matrixId):s.matrixItems}; }),
-    toggleEvent:(id,v)=>up(s=>({events:s.events.map(x=>x.id===id?{...x,done:v}:x)})),
+    toggleEvent:(id,v)=>up(s=>{ const ev=s.events.find(x=>x.id===id);
+      if(ev){ const nv={...ev,done:v}; rkWriteDoc('events',id,nv); }
+      return {events:s.events.map(x=>x.id===id?{...x,done:v}:x)}; }),
     // maintenance (auto-sync ke Matrix bila biaya>0)
     addMaint:m=>up(s=>{
       const id=newId('mt'); const mt={...m,id,done:false};
-      let matrixItems=s.matrixItems; const due=nextDue(mt)||mt.last;
+      let mItem=null; const due=nextDue(mt)||mt.last;
       if(m.biaya>0){ const mid=newId('m'); mt.matrixId=mid;
-        matrixItems=[...matrixItems,linkedMatrix(mid,mt.name,m.biaya,due,'maint',id)];
-      }
-      return {maintenance:[...s.maintenance,mt],matrixItems};
+        mItem=linkedMatrix(mid,mt.name,m.biaya,due,'maint',id); }
+      rkWriteDoc('maintenance',id,mt);
+      if(mItem) rkWriteDoc('matrixItems',mItem.id,mItem);
+      return {maintenance:[...s.maintenance,mt],
+              matrixItems:mItem?[...s.matrixItems,mItem]:s.matrixItems};
     }),
     updateMaint:m=>up(s=>{
       let matrixItems=[...s.matrixItems]; let matrixId=m.matrixId; const due=nextDue(m)||m.last;
       const existing=matrixId?matrixItems.find(x=>x.id===matrixId):null;
+      let writeMatrix=null, delMatrixId=null;
       if(m.biaya>0){
-        if(existing){ matrixItems=matrixItems.map(x=>x.id===matrixId?{...x,title:m.name,amount:m.biaya,year:due.getFullYear(),month:due.getMonth()+1}:x); }
-        else { matrixId=newId('m'); matrixItems=[...matrixItems,linkedMatrix(matrixId,m.name,m.biaya,due,'maint',m.id)]; }
-      } else if(existing){ matrixItems=matrixItems.filter(x=>x.id!==matrixId); matrixId=undefined; }
+        if(existing){ const nm={...existing,title:m.name,amount:m.biaya,year:due.getFullYear(),month:due.getMonth()+1};
+          matrixItems=matrixItems.map(x=>x.id===matrixId?nm:x); writeMatrix=nm; }
+        else { matrixId=newId('m'); const nm=linkedMatrix(matrixId,m.name,m.biaya,due,'maint',m.id);
+          matrixItems=[...matrixItems,nm]; writeMatrix=nm; }
+      } else if(existing){ delMatrixId=matrixId; matrixItems=matrixItems.filter(x=>x.id!==matrixId); matrixId=undefined; }
       const mt={...m,matrixId};
+      rkWriteDoc('maintenance',mt.id,mt);
+      if(writeMatrix) rkWriteDoc('matrixItems',writeMatrix.id,writeMatrix);
+      if(delMatrixId) rkDeleteDoc('matrixItems',delMatrixId);
       return {maintenance:s.maintenance.map(x=>x.id===m.id?mt:x),matrixItems};
     }),
     deleteMaint:id=>up(s=>{ const mt=s.maintenance.find(x=>x.id===id);
+      rkDeleteDoc('maintenance',id);
+      if(mt&&mt.matrixId) rkDeleteDoc('matrixItems',mt.matrixId);
       return {maintenance:s.maintenance.filter(x=>x.id!==id),
               matrixItems:mt&&mt.matrixId?s.matrixItems.filter(m=>m.id!==mt.matrixId):s.matrixItems}; }),
-    toggleMaint:(id,v)=>up(s=>({maintenance:s.maintenance.map(x=>x.id===id?{...x,done:v}:x)})),
-    markMaintDone:(id,today)=>up(s=>({maintenance:s.maintenance.map(x=>x.id===id?{...x,last:new Date(today.getFullYear(),today.getMonth(),today.getDate()),done:false}:x)})),
+    toggleMaint:(id,v)=>up(s=>{ const mt=s.maintenance.find(x=>x.id===id);
+      if(mt){ const nv={...mt,done:v}; rkWriteDoc('maintenance',id,nv); }
+      return {maintenance:s.maintenance.map(x=>x.id===id?{...x,done:v}:x)}; }),
+    markMaintDone:(id,today)=>up(s=>{ const mt=s.maintenance.find(x=>x.id===id);
+      if(mt){ const nv={...mt,last:new Date(today.getFullYear(),today.getMonth(),today.getDate()),done:false}; rkWriteDoc('maintenance',id,nv); }
+      return {maintenance:s.maintenance.map(x=>x.id===id?{...x,last:new Date(today.getFullYear(),today.getMonth(),today.getDate()),done:false}:x)}; }),
     // journal
-    addJournal:j=>up(s=>({journal:[{...j,id:newId('j')},...s.journal]})),
-    deleteJournal:id=>up(s=>({journal:s.journal.filter(x=>x.id!==id)})),
+    addJournal:j=>{ const id=newId('j'); const rec={...j,id}; rkWriteDoc('journal',id,rec);
+      up(s=>({journal:[rec,...s.journal]})); },
+    deleteJournal:id=>{ rkDeleteDoc('journal',id);
+      up(s=>({journal:s.journal.filter(x=>x.id!==id)})); },
     // reflections
-    answerReflection:(id,by,ans)=>up(s=>({reflections:s.reflections.map(r=>r.id===id?{...r,['a_'+by]:ans}:r)})),
-    revealReflection:id=>up(s=>({reflections:s.reflections.map(r=>r.id===id?{...r,revealed:true}:r)})),
-    addReflection:prompt=>up(s=>({reflections:[{id:newId('r'),date:todayD,prompt,a_azwar:'',a_dewi:'',revealed:false},...s.reflections]})),
-    deleteReflection:id=>up(s=>({reflections:s.reflections.filter(r=>r.id!==id)})),
+    answerReflection:(id,by,ans)=>up(s=>{ const r=s.reflections.find(x=>x.id===id);
+      if(r){ const nr={...r,['a_'+by]:ans}; rkWriteDoc('reflections',id,nr); }
+      return {reflections:s.reflections.map(r=>r.id===id?{...r,['a_'+by]:ans}:r)}; }),
+    revealReflection:id=>up(s=>{ const r=s.reflections.find(x=>x.id===id);
+      if(r){ const nr={...r,revealed:true}; rkWriteDoc('reflections',id,nr); }
+      return {reflections:s.reflections.map(r=>r.id===id?{...r,revealed:true}:r)}; }),
+    addReflection:prompt=>{ const id=newId('r'); const rec={id,date:todayD,prompt,a_azwar:'',a_dewi:'',revealed:false};
+      rkWriteDoc('reflections',id,rec);
+      up(s=>({reflections:[rec,...s.reflections]})); },
+    deleteReflection:id=>{ rkDeleteDoc('reflections',id);
+      up(s=>({reflections:s.reflections.filter(r=>r.id!==id)})); },
     // traveling
-    addTrip:t=>up(s=>({trips:[{...t,id:newId('tr')},...s.trips]})),
-    updateTrip:t=>up(s=>({trips:s.trips.map(x=>x.id===t.id?t:x)})),
-    deleteTrip:id=>up(s=>({trips:s.trips.filter(x=>x.id!==id)})),
-    toggleTripItem:(tid,iid)=>up(s=>({trips:s.trips.map(t=>t.id!==tid?t:{...t,items:t.items.map(i=>i.id===iid?{...i,done:!i.done}:i)})})),
-    addTripItem:(tid,text)=>up(s=>({trips:s.trips.map(t=>t.id!==tid?t:{...t,items:[...t.items,{id:newId('i'),text,done:false}]})})),
-    removeTripItem:(tid,iid)=>up(s=>({trips:s.trips.map(t=>t.id!==tid?t:{...t,items:t.items.filter(i=>i.id!==iid)})})),
-    setPayday:d=>up(s=>({settings:{...s.settings,paydayDefault:d}})),
-    setPeriodOverride:(key,start,end)=>up(s=>({settings:{...s.settings,periodOverrides:{...(s.settings.periodOverrides||{}),[key]:{start,end}}}})),
-    clearPeriodOverride:key=>up(s=>{ const o={...(s.settings.periodOverrides||{})}; delete o[key]; return {settings:{...s.settings,periodOverrides:o}}; }),
+    addTrip:t=>{ const id=newId('tr'); const rec={...t,id}; rkWriteDoc('trips',id,rec);
+      up(s=>({trips:[rec,...s.trips]})); },
+    updateTrip:t=>{ rkWriteDoc('trips',t.id,t);
+      up(s=>({trips:s.trips.map(x=>x.id===t.id?t:x)})); },
+    deleteTrip:id=>{ rkDeleteDoc('trips',id);
+      up(s=>({trips:s.trips.filter(x=>x.id!==id)})); },
+    toggleTripItem:(tid,iid)=>up(s=>{ const t=s.trips.find(x=>x.id===tid);
+      if(t){ const nt={...t,items:t.items.map(i=>i.id===iid?{...i,done:!i.done}:i)}; rkWriteDoc('trips',tid,nt); }
+      return {trips:s.trips.map(t=>t.id!==tid?t:{...t,items:t.items.map(i=>i.id===iid?{...i,done:!i.done}:i)})}; }),
+    addTripItem:(tid,text)=>up(s=>{ const t=s.trips.find(x=>x.id===tid);
+      if(t){ const nt={...t,items:[...t.items,{id:newId('i'),text,done:false}]}; rkWriteDoc('trips',tid,nt);
+        return {trips:s.trips.map(x=>x.id===tid?nt:x)}; }
+      return {}; }),
+    removeTripItem:(tid,iid)=>up(s=>{ const t=s.trips.find(x=>x.id===tid);
+      if(t){ const nt={...t,items:t.items.filter(i=>i.id!==iid)}; rkWriteDoc('trips',tid,nt); }
+      return {trips:s.trips.map(t=>t.id!==tid?t:{...t,items:t.items.filter(i=>i.id!==iid)})}; }),
+    setPayday:d=>up(s=>{ const ns={...s.settings,paydayDefault:d}; rkWriteSettings(ns);
+      return {settings:ns}; }),
+    setPeriodOverride:(key,start,end)=>up(s=>{ const ns={...s.settings,periodOverrides:{...(s.settings.periodOverrides||{}),[key]:{start,end}}}; rkWriteSettings(ns);
+      return {settings:ns}; }),
+    clearPeriodOverride:key=>up(s=>{ const o={...(s.settings.periodOverrides||{})}; delete o[key]; const ns={...s.settings,periodOverrides:o}; rkWriteSettings(ns);
+      return {settings:ns}; }),
   };
 }
 

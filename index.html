@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="theme-color" content="#3E6B63" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="RumahKita" />
 <title>RumahKita — Anchor of Serenity</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -633,7 +637,7 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
 <script type="module">
   /* ================= FIREBASE (Bagian 6) ================= */
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut }
+  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
   import { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc,
            deleteDoc, addDoc, getDoc, Timestamp }
@@ -654,7 +658,7 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
 
   window.RKFB = {
     auth, db,
-    signInWithEmailAndPassword, onAuthStateChanged, signOut,
+    signInWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword,
     collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, addDoc, getDoc, Timestamp,
     familyId: "keluarga-azwar-dewi",
   };
@@ -1624,7 +1628,7 @@ function SheetRouter({sheet,ctx}){
     event:EventSheet, maintenance:MaintenanceSheet, eventCategory:EventCategorySheet,
     journal:JournalSheet, reflection:ReflectionSheet, conversation:ConversationSheet,
     goal:GoalSheet, trip:TripSheet, periodEditor:PeriodEditorSheet,
-    budgetEdit:BudgetEditSheet, paydayEdit:PaydayEditSheet,
+    budgetEdit:BudgetEditSheet, paydayEdit:PaydayEditSheet, changePw:ChangePwSheet,
   };
   const Comp=map[type];
   return h(Sheet,{open:true,onClose:ctx.closeSheet}, Comp?h(Comp,{ctx,...props}):null);
@@ -2889,6 +2893,103 @@ function EventCategorySheet({ctx}){
 }
 
 /* ================= SETTING ================= */
+// Export seluruh data sebagai file JSON (cadangan lokal).
+function exportData(state){
+  try{
+    var replacer=function(k,v){ return v; };
+    var json=JSON.stringify(state,function(key,value){
+      // Date -> string ISO agar terbaca.
+      if(this[key] instanceof Date) return this[key].toISOString();
+      return value;
+    },2);
+    var blob=new Blob([json],{type:'application/json'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    var d=new Date();
+    var stamp=d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+    a.href=url; a.download='RumahKita-backup-'+stamp+'.json';
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); },1000);
+    toast('Data diunduh 💾');
+  }catch(e){ toast('Gagal mengunduh data'); }
+}
+
+// Sheet ubah kata sandi (Firebase Auth).
+function ChangePwSheet({ctx}){
+  const [pw,setPw]=useState('');
+  const [pw2,setPw2]=useState('');
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+  const submit=async()=>{
+    setErr('');
+    if(pw.length<6){ setErr('Kata sandi minimal 6 karakter.'); return; }
+    if(pw!==pw2){ setErr('Konfirmasi tidak cocok.'); return; }
+    const FB=window.RKFB;
+    if(!FB||!FB.auth||!FB.auth.currentUser){ setErr('Belum masuk. Coba login ulang.'); return; }
+    setBusy(true);
+    try{
+      // updatePassword tersedia lewat modul auth; ekspor bila ada.
+      if(FB.updatePassword){ await FB.updatePassword(FB.auth.currentUser,pw); }
+      else { throw {code:'no-update'}; }
+      toast('Kata sandi diperbarui ✓');
+      ctx.closeSheet();
+    }catch(e){
+      const code=(e&&e.code)||'';
+      if(code.includes('requires-recent-login'))
+        setErr('Demi keamanan, keluar lalu masuk lagi sebelum mengubah sandi.');
+      else if(code==='no-update')
+        setErr('Fitur belum aktif. Perlu pembaruan aplikasi.');
+      else setErr('Gagal: '+code);
+      setBusy(false);
+    }
+  };
+  return h('div',null,[
+    h('div',{key:'t',style:{fontWeight:800,fontSize:18,marginBottom:4}},'Ubah kata sandi'),
+    h('div',{key:'s',className:'muted b-sm',style:{marginBottom:16}},'Masukkan kata sandi baru (min. 6 karakter).'),
+    h('input',{key:'i1',className:'field',type:'password',value:pw,placeholder:'Kata sandi baru',autoFocus:true,
+      disabled:busy,onChange:e=>{setPw(e.target.value);setErr('');}}),
+    h('input',{key:'i2',className:'field',type:'password',value:pw2,placeholder:'Ulangi kata sandi',style:{marginTop:10},
+      disabled:busy,onChange:e=>{setPw2(e.target.value);setErr('');},onKeyDown:e=>{if(e.key==='Enter')submit();}}),
+    err?h('div',{key:'e',style:{color:C.expense,fontSize:12,marginTop:8}},err):null,
+    h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:16,padding:14,opacity:busy?.6:1},
+      disabled:busy,onClick:submit},busy?'Menyimpan…':'Simpan'),
+  ]);
+}
+
+// Grup Pasang Aplikasi (PWA). Tampil bila bisa install atau di iOS.
+function InstallGroup(){
+  const [canInstall,setCanInstall]=useState(!!window.__rkInstallEvt);
+  const [installed,setInstalled]=useState(false);
+  const [showIosTip,setShowIosTip]=useState(false);
+  useEffect(()=>{
+    const on=()=>setCanInstall(true);
+    const onI=()=>{ setInstalled(true); setCanInstall(false); };
+    window.addEventListener('rk-can-install',on);
+    window.addEventListener('rk-installed',onI);
+    return ()=>{ window.removeEventListener('rk-can-install',on); window.removeEventListener('rk-installed',onI); };
+  },[]);
+  // Deteksi iOS & apakah sudah berjalan sebagai app (standalone).
+  const ua=navigator.userAgent||'';
+  const isIos=/iPad|iPhone|iPod/.test(ua);
+  const standalone=(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||window.navigator.standalone;
+  if(standalone||installed) return null; // sudah terpasang → sembunyikan
+
+  const doInstall=async()=>{
+    const e=window.__rkInstallEvt;
+    if(e){ e.prompt(); try{ await e.userChoice; }catch(_){} window.__rkInstallEvt=null; setCanInstall(false); }
+    else if(isIos){ setShowIosTip(true); }
+    else { toast('Buka menu browser ⋮ → "Pasang aplikasi"'); }
+  };
+
+  return h(SettingGroup,{title:'APLIKASI'},[
+    h(SettingRow,{key:'inst',icon:'home',color:C.gold,title:'Pasang di layar utama',
+      sub:isIos?'Tambah ke Home Screen (Safari)':'Pasang sebagai aplikasi',onClick:doInstall}),
+    showIosTip?h('div',{key:'tip',className:'b-sm',style:{padding:'10px 14px',color:C.softInk,lineHeight:1.6}},
+      'Di Safari: ketuk tombol Bagikan (kotak dengan panah ke atas) di bawah, lalu pilih "Tambahkan ke Layar Utama".'):null,
+  ]);
+}
+
 function SettingRow({icon,color,title,sub,right,onClick,danger}){
   return h('button',{className:'setrow',onClick,style:onClick?null:{cursor:'default'}},[
     h('div',{key:'ic',className:'setrow-ic',style:{background:(color||C.gold)+'1f'}},h(Icon,{name:icon,size:18,color:color||C.gold})),
@@ -2943,17 +3044,16 @@ function SettingScreen({ctx}){
     ]),
 
     // Data & Keamanan
+    h(InstallGroup,{key:'install'}),
     h(SettingGroup,{key:'data',title:'DATA & KEAMANAN'},[
-      h(SettingRow,{key:'pw',icon:'settings',color:C.teal,title:'Ubah kata sandi',onClick:()=>toast('Ubah sandi menyusul')}),
+      h(SettingRow,{key:'pw',icon:'settings',color:C.teal,title:'Ubah kata sandi',onClick:()=>ctx.openSheet('changePw')}),
       h('div',{key:'d1',className:'setdiv'}),
-      h(SettingRow,{key:'bk',icon:'savings',color:C.sage,title:'Cadangkan data',sub:'Sinkron cloud saat integrasi Firebase',onClick:()=>toast('Backup tersedia setelah Firebase')}),
+      h(SettingRow,{key:'bk',icon:'savings',color:C.sage,title:'Export data',sub:'Unduh cadangan (file JSON)',onClick:()=>exportData(store.state)}),
     ]),
 
     // Tentang
     h(SettingGroup,{key:'about',title:'TENTANG'},[
-      h(SettingRow,{key:'v',icon:'home',color:C.goldDark,title:'RumahKita',sub:'Anchor of Serenity',right:h('span',{className:'b-sm muted'},'v0.4 · Web Preview')}),
-      h('div',{key:'d1',className:'setdiv'}),
-      h(SettingRow,{key:'st',icon:'grid',color:C.gold,title:'Tahap pembangunan',right:h('span',{className:'b-sm muted'},'1–4 selesai')}),
+      h(SettingRow,{key:'v',icon:'home',color:C.goldDark,title:'RumahKita',sub:'Anchor of Serenity',right:h('span',{className:'b-sm muted'},'v1.08 · Web')}),
       h('div',{key:'d2',className:'setdiv'}),
       h(SettingRow,{key:'help',icon:'heart',color:C.maroon,title:'Bantuan & Masukan',onClick:()=>toast('Terima kasih 💛')}),
     ]),
@@ -3449,6 +3549,51 @@ function PaydayEditSheet({ctx,current}){
 
 /* ================= MOUNT ================= */
 (function setFavicon(){ try{ let l=document.querySelector("link[rel~='icon']"); if(!l){l=document.createElement('link');l.rel='icon';document.head.appendChild(l);} l.href=LOGO_SRC; }catch(e){} })();
+
+/* ================= PWA: manifest + service worker + install ================= */
+(function setupPWA(){
+  try{
+    // apple-touch-icon (agar ikon bagus saat Add to Home Screen di iOS).
+    var al=document.createElement('link'); al.rel='apple-touch-icon'; al.href=LOGO_SRC; document.head.appendChild(al);
+
+    // Manifest dibuat runtime sebagai blob (tetap satu file HTML).
+    var manifest={
+      name:'RumahKita', short_name:'RumahKita',
+      description:'Anchor of Serenity — keuangan & kedekatan keluarga',
+      start_url:'.', scope:'.', display:'standalone',
+      background_color:'#F6F1E7', theme_color:'#3E6B63',
+      icons:[
+        {src:LOGO_SRC, sizes:'192x192', type:'image/webp', purpose:'any maskable'},
+        {src:LOGO_SRC, sizes:'512x512', type:'image/webp', purpose:'any maskable'},
+      ],
+    };
+    var mBlob=new Blob([JSON.stringify(manifest)],{type:'application/manifest+json'});
+    var mUrl=URL.createObjectURL(mBlob);
+    var ml=document.createElement('link'); ml.rel='manifest'; ml.href=mUrl; document.head.appendChild(ml);
+
+    // Service worker minimal (syarat installable). Dibuat dari blob.
+    if('serviceWorker' in navigator){
+      var swCode="self.addEventListener('install',e=>self.skipWaiting());"+
+                 "self.addEventListener('activate',e=>self.clients.claim());"+
+                 "self.addEventListener('fetch',e=>{});";
+      var swBlob=new Blob([swCode],{type:'text/javascript'});
+      var swUrl=URL.createObjectURL(swBlob);
+      navigator.serviceWorker.register(swUrl).catch(function(){});
+    }
+
+    // Tangkap event install (Android/Chrome) untuk tombol kustom.
+    window.addEventListener('beforeinstallprompt',function(e){
+      e.preventDefault();
+      window.__rkInstallEvt=e;
+      window.dispatchEvent(new Event('rk-can-install'));
+    });
+    window.addEventListener('appinstalled',function(){
+      window.__rkInstallEvt=null;
+      window.dispatchEvent(new Event('rk-installed'));
+    });
+  }catch(e){}
+})();
+
 ReactDOM.createRoot(document.getElementById('root')).render(h(App));
 
 </script>

@@ -654,7 +654,7 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
 <script type="module">
   /* ================= FIREBASE (Bagian 6) ================= */
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword }
+  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, setPersistence, inMemoryPersistence }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
   import { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc,
            deleteDoc, addDoc, getDoc, Timestamp }
@@ -672,6 +672,10 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
   const app  = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db   = getFirestore(app);
+
+  /* Persistence in-memory: sesi TIDAK disimpan antar buka-tutup app.
+     Konsekuensi: tiap buka app wajib pilih akun + isi kata sandi lagi. */
+  setPersistence(auth, inMemoryPersistence).catch(()=>{});
 
   window.RKFB = {
     auth, db,
@@ -1076,16 +1080,31 @@ function TaskCard({done,title,subtitle,leadingColor,trailingChip,trailingChipCol
 
 /* Sheet host */
 function Sheet({open,onClose,children}){
+  useEffect(()=>{
+    if(!open) return;
+    // Kunci scroll latar (mencegah "layar belakang ikut gerak" di iOS).
+    const scroller=document.getElementById('appScroll');
+    const prevBody=document.body.style.overflow;
+    const prevScroller=scroller?scroller.style.overflow:'';
+    document.body.style.overflow='hidden';
+    if(scroller) scroller.style.overflow='hidden';
+    return ()=>{
+      document.body.style.overflow=prevBody;
+      if(scroller) scroller.style.overflow=prevScroller;
+    };
+  },[open]);
   if(!open)return null;
+  const stop=e=>{ e.stopPropagation(); };
   return h('div',{className:'sheetwrap',style:{position:'absolute',inset:0,zIndex:50}},[
     h('div',{key:'b',style:{position:'absolute',inset:0,background:'rgba(20,16,10,.42)',animation:'fade .2s'},onClick:onClose}),
-    h('div',{key:'s',style:{position:'absolute',left:0,right:0,bottom:0,
+    h('div',{key:'s',onClick:stop,style:{position:'absolute',left:0,right:0,bottom:0,
       maxHeight:'88svh',display:'flex',flexDirection:'column',overflow:'hidden',
       background:'var(--card)',borderRadius:'24px 24px 0 0',
       paddingTop:8,
       animation:'slideup .26s cubic-bezier(.2,.9,.3,1)'}},[
       h('div',{key:'g',className:'grip',style:{flexShrink:0}}),
       h('div',{key:'body',style:{overflowY:'auto',WebkitOverflowScrolling:'touch',minHeight:0,
+        overscrollBehavior:'contain',touchAction:'pan-y',
         padding:'0 18px calc(18px + env(safe-area-inset-bottom,0px))'}}, children),
     ]),
   ]);

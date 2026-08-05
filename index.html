@@ -722,10 +722,12 @@ const daysBetween=(a,b)=>{ const da=new Date(a.getFullYear(),a.getMonth(),a.getD
 const roleLabel = by => by==='azwar'?'Suami': by==='dewi'?'Istri': by;
 const displayName = by => by==='azwar'?'Azwar': by==='dewi'?'Dewi': by;
 
-/* Anchor tanggal tunggal (satu "hari ini" agar semua fitur terintegrasi).
-   29 Juli 2026 — konsisten untuk keuangan, jadwal, pengingat, dan dashboard. */
-const FIN_TODAY = new Date(2026,6,29);
-const TODAY = new Date(2026,6,29);
+/* Anchor tanggal tunggal ("hari ini" untuk semua fitur).
+   Mengikuti tanggal & jam perangkat secara real-time.
+   - FIN_TODAY menyimpan waktu penuh (dipakai a.l. untuk salam pagi/siang/sore/malam).
+   - TODAY & todayD dinormalkan ke tengah malam (dipakai untuk perbandingan tanggal). */
+const FIN_TODAY = new Date();
+const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.getDate());
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Akun ---------------- */
@@ -2176,7 +2178,7 @@ function PlanSheet({ctx,edit}){
   const [title,setTitle]=useState(edit?edit.title:'');
   const [amount,setAmount]=useState(edit?edit.amount:0);
   const [quadrant,setQuadrant]=useState(edit?edit.quadrant:'p');
-  const now=edit?new Date(edit.year,edit.month-1,1):new Date(2026,7,1);
+  const now=edit?new Date(edit.year,edit.month-1,1):new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),1);
   const [ym,setYm]=useState(monthKey(now));
   const [by,setBy]=useState(edit?edit.by:account.key);
   const save=()=>{ if(!title||amount<=0){toast('Lengkapi judul & harga');return;}

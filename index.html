@@ -721,6 +721,18 @@ const sameDay = (a,b)=>a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMo
 const daysBetween=(a,b)=>{ const da=new Date(a.getFullYear(),a.getMonth(),a.getDate()); const db=new Date(b.getFullYear(),b.getMonth(),b.getDate()); return Math.round((db-da)/86400000); };
 const roleLabel = by => by==='azwar'?'Suami': by==='dewi'?'Istri': by;
 const displayName = by => by==='azwar'?'Azwar': by==='dewi'?'Dewi': by;
+/* ---- Traveling: konstanta & util ---- */
+const TRANSPORT={mobil:'\uD83D\uDE97',motor:'\uD83C\uDFCD\uFE0F',pesawat:'\u2708\uFE0F',kapal:'\uD83D\uDEA2',kereta:'\uD83D\uDE86',bus:'\uD83D\uDE8C',jalan:'\uD83D\uDEB6'};
+const TRANSPORT_LABEL={mobil:'Mobil',motor:'Motor',pesawat:'Pesawat',kapal:'Kapal',kereta:'Kereta',bus:'Bus',jalan:'Jalan kaki'};
+const fmtTime=t=>t?`${String(t.h).padStart(2,'0')}.${String(t.m).padStart(2,'0')}`:'';
+const parseTimeStr=s=>{ if(!s)return null; const p=s.split(':').map(Number); return {h:p[0],m:p[1]}; };
+const toTimeInput=t=>t?`${String(t.h).padStart(2,'0')}:${String(t.m).padStart(2,'0')}`:'';
+const fmtDurMin=min=>{ if(!min)return''; const hh=Math.floor(min/60),mm=min%60; return `${hh?hh+' jam':''}${mm?(hh?' ':'')+mm+' mnt':''}`.trim(); };
+const addMinTime=(t,min)=>{ if(!t)return null; let tot=t.h*60+t.m+min; tot=((tot%1440)+1440)%1440; return {h:Math.floor(tot/60),m:tot%60}; };
+const diffMinTime=(a,b)=>{ if(!a||!b)return 0; let d=(b.h*60+b.m)-(a.h*60+a.m); if(d<0)d+=1440; return d; };
+const asDate=x=> (x instanceof Date)? x : (x?new Date(x):x);
+const segEst=sg=>(sg.estItems||[]).reduce((a,e)=>a+(e.amount||0),0);
+const tripEst=t=>(t.segments||[]).reduce((a,sg)=>a+segEst(sg),0);
 
 /* Anchor tanggal tunggal ("hari ini" untuk semua fitur).
    Mengikuti tanggal & jam perangkat secara real-time.
@@ -764,6 +776,12 @@ const seedTransactions=()=>{ const J=n=>new Date(2026,6,n); const Jn=n=>new Date
   {id:'t10',categoryId:'bonus',amount:500000,date:J(2),note:'THR kecil',by:'azwar'},
   {id:'t11',categoryId:'gaji',amount:6700000,date:Jn(28),note:'Gaji Juni',by:'azwar'},
   {id:'t12',categoryId:'makan',amount:52000,date:Jn(30),note:'Bakso',by:'dewi'},
+  // Travel (tripId) \u2192 dikecualikan dari kalkulasi keuangan; masuk actual cost trip.
+  {id:'tt1',categoryId:'transport',amount:320000,date:new Date(2026,7,15),note:'Bensin + tol',by:'azwar',tripId:'tr1'},
+  {id:'tt2',categoryId:'makan',amount:180000,date:new Date(2026,7,15),note:'Makan siang tepi pantai',by:'dewi',tripId:'tr1'},
+  {id:'tt3',categoryId:'hiburan',amount:200000,date:new Date(2026,7,16),note:'Tiket jeep gumuk pasir',by:'azwar',tripId:'tr1'},
+  {id:'tt4',categoryId:'makan',amount:145000,date:new Date(2026,7,16),note:'Seafood malam',by:'dewi',tripId:'tr1'},
+  {id:'tt5',categoryId:'belanja',amount:260000,date:new Date(2026,7,17),note:'Oleh-oleh keluarga',by:'dewi',tripId:'tr1'},
 ];};
 const seedMatrix=()=>[
   {id:'m1',title:'Bayar PBB rumah',amount:1250000,quadrant:'up',year:2026,month:7,done:true,by:'azwar'},
@@ -774,6 +792,7 @@ const seedMatrix=()=>[
   {id:'m6',title:'Perpanjang STNK motor',amount:350000,quadrant:'u',year:2026,month:8,done:false,by:'azwar'},
   {id:'m7',title:'Ganti gorden kamar',amount:600000,quadrant:'n',year:2026,month:10,done:false,by:'dewi'},
   {id:'m8',title:'Rak buku anak',amount:450000,quadrant:'n',year:2026,month:11,done:false,by:'dewi'},
+  {id:'m_tr1',title:'\uD83C\uDF92 Pantai Parangtritis',amount:1200000,quadrant:'n',year:2026,month:8,done:false,by:'azwar',sourceType:'trip',sourceId:'tr1'},
 ];
 const DEFAULT_BUDGET=4000000;
 const seedBudget=()=>({'2026-07':DEFAULT_BUDGET,'2026-08':DEFAULT_BUDGET});
@@ -851,11 +870,22 @@ const TRIP_TEMPLATES={
   'Umum':['Pakaian ganti','Peralatan mandi','Charger','Dokumen (KTP/tiket)','Obat pribadi','Uang tunai'],
 };
 const seedTrips=()=>[
-  {id:'tr1',dest:'Pantai Parangtritis',note:'Liburan keluarga akhir pekan',start:new Date(2026,7,15),end:new Date(2026,7,17),
-   items:[
-     {id:'i1',text:'Baju renang',done:true},{id:'i2',text:'Sunblock',done:true},{id:'i3',text:'Handuk',done:false},
-     {id:'i4',text:'Kamera',done:false},{id:'i5',text:'Obat pribadi',done:false},{id:'i6',text:'Camilan anak',done:false},
+  {id:'tr1',dest:'Pantai Parangtritis',note:'Liburan keluarga akhir pekan',start:new Date(2026,7,15),end:new Date(2026,7,17),by:'azwar',matrixId:'m_tr1',
+   segments:[
+     {id:'sg1',date:new Date(2026,7,15),startTime:{h:8,m:0},mode:'until',endTime:{h:12,m:0},durationMin:null,location:'Perjalanan Jogja \u2192 Pantai',transport:'mobil',activity:'Berangkat & check-in penginapan',
+      estItems:[{id:'e1',categoryId:'transport',amount:350000}],
+      prep:[{id:'i1',text:'Bekal perjalanan',done:true},{id:'i2',text:'Dokumen (KTP & booking)',done:true}]},
+     {id:'sg2',date:new Date(2026,7,15),startTime:{h:15,m:0},mode:'duration',endTime:null,durationMin:180,location:'Bibir Pantai Parangtritis',transport:'jalan',activity:'Main pasir & foto sunset',
+      estItems:[{id:'e2',categoryId:'makan',amount:150000}],
+      prep:[{id:'i3',text:'Sunblock',done:true},{id:'i4',text:'Kamera',done:false},{id:'i5',text:'Baju ganti',done:false}]},
+     {id:'sg3',date:new Date(2026,7,16),startTime:{h:9,m:0},mode:'until',endTime:{h:13,m:0},durationMin:null,location:'Gumuk Pasir',transport:'mobil',activity:'Sandboarding & naik jeep',
+      estItems:[{id:'e3',categoryId:'hiburan',amount:400000}],
+      prep:[{id:'i6',text:'Kacamata hitam',done:false},{id:'i7',text:'Topi',done:false}]},
+     {id:'sg4',date:new Date(2026,7,17),startTime:{h:10,m:0},mode:'until',endTime:{h:14,m:0},durationMin:null,location:'Pasar oleh-oleh \u2192 pulang',transport:'mobil',activity:'Beli oleh-oleh & perjalanan pulang',
+      estItems:[{id:'e4',categoryId:'belanja',amount:300000}],
+      prep:[{id:'i8',text:'Uang tunai',done:true}]},
    ]},
+  {id:'tr2',dest:'Malang \u2013 Kota Batu',note:'',start:new Date(2026,8,20),end:new Date(2026,8,23),by:'dewi',matrixId:undefined,segments:[]},
 ];
 
 /* ---------------- Kalkulasi keuangan ---------------- */
@@ -913,10 +943,10 @@ function makeCalc(state){
   const isIncome=t=>{const c=catById(t.categoryId);return c&&c.type==='income';};
   // txInMonth kini = transaksi dalam PERIODE gajian bulan m/y
   const txInMonth=(y,m)=>{ const {start,end}=periodRange(state,y,m);
-    return state.transactions.filter(t=>{ if(!t.date||typeof t.date.getFullYear!=='function') return false; const d=new Date(t.date.getFullYear(),t.date.getMonth(),t.date.getDate()); return d>=start&&d<=end; }); };
+    return state.transactions.filter(t=>{ if(t.tripId) return false; if(!t.date||typeof t.date.getFullYear!=='function') return false; const d=new Date(t.date.getFullYear(),t.date.getMonth(),t.date.getDate()); return d>=start&&d<=end; }); };
   const totalIncome=(y,m)=>txInMonth(y,m).filter(isIncome).reduce((a,t)=>a+t.amount,0);
   const totalExpense=(y,m)=>txInMonth(y,m).filter(isExpense).reduce((a,t)=>a+t.amount,0);
-  const kumulatif=()=>{let inc=0,exp=0;state.transactions.forEach(t=>{if(isIncome(t))inc+=t.amount;if(isExpense(t))exp+=t.amount;});return inc-exp;};
+  const kumulatif=()=>{let inc=0,exp=0;state.transactions.forEach(t=>{if(t.tripId)return;if(isIncome(t))inc+=t.amount;if(isExpense(t))exp+=t.amount;});return inc-exp;};
   const expenseByCategory=(cid,y,m)=>txInMonth(y,m).filter(t=>t.categoryId===cid).reduce((a,t)=>a+t.amount,0);
   const cukupHari=({year,month,budgetBelanja,today,lajuManual})=>{
     const {start}=periodRange(state,year,month);
@@ -983,7 +1013,7 @@ function buildPeriodFeed(s,scope){
   // maintenance (pakai jatuh tempo)
   s.maintenance.forEach(m=>{ const due=nextDue(m); if(due&&inRange(due,a,b)) tasks.push({kind:'maint',id:m.id,title:m.name,date:due,done:m.done,color:C.clay,icon:'build',toMatrix:m.biaya>0}); });
   // transaksi
-  s.transactions.forEach(t=>{ if(inRange(t.date,a,b)) txs.push(t); });
+  s.transactions.forEach(t=>{ if(t.tripId) return; if(inRange(t.date,a,b)) txs.push(t); });
   tasks.sort((x,y)=>(x.done?1:0)-(y.done?1:0) || ((x.date?x.date:0)-(y.date?y.date:0)));
   txs.sort((x,y)=>y.date-x.date);
   return {a,b,tasks,txs};
@@ -1325,6 +1355,8 @@ function useStore(){
     // kategori
     addCat:c=>{ const id=newId('c'); const rec={...c,id}; rkWriteDoc('categories',id,rec);
       up(s=>({categories:[...s.categories,rec]})); },
+    addCatRaw:rec=>{ rkWriteDoc('categories',rec.id,rec);
+      up(s=>(s.categories.some(x=>x.id===rec.id)?{}:{categories:[...s.categories,rec]})); },
     updateCat:c=>{ rkWriteDoc('categories',c.id,c);
       up(s=>({categories:s.categories.map(x=>x.id===c.id?c:x)})); },
     deleteCat:id=>{ rkDeleteDoc('categories',id);
@@ -1443,23 +1475,31 @@ function useStore(){
       up(s=>({reflections:[rec,...s.reflections]})); },
     deleteReflection:id=>{ rkDeleteDoc('reflections',id);
       up(s=>({reflections:s.reflections.filter(r=>r.id!==id)})); },
-    // traveling
-    addTrip:t=>{ const id=newId('tr'); const rec={...t,id}; rkWriteDoc('trips',id,rec);
-      up(s=>({trips:[rec,...s.trips]})); },
-    updateTrip:t=>{ rkWriteDoc('trips',t.id,t);
-      up(s=>({trips:s.trips.map(x=>x.id===t.id?t:x)})); },
-    deleteTrip:id=>{ rkDeleteDoc('trips',id);
-      up(s=>({trips:s.trips.filter(x=>x.id!==id)})); },
-    toggleTripItem:(tid,iid)=>up(s=>{ const t=s.trips.find(x=>x.id===tid);
-      if(t){ const nt={...t,items:t.items.map(i=>i.id===iid?{...i,done:!i.done}:i)}; rkWriteDoc('trips',tid,nt); }
-      return {trips:s.trips.map(t=>t.id!==tid?t:{...t,items:t.items.map(i=>i.id===iid?{...i,done:!i.done}:i)})}; }),
-    addTripItem:(tid,text)=>up(s=>{ const t=s.trips.find(x=>x.id===tid);
-      if(t){ const nt={...t,items:[...t.items,{id:newId('i'),text,done:false}]}; rkWriteDoc('trips',tid,nt);
-        return {trips:s.trips.map(x=>x.id===tid?nt:x)}; }
-      return {}; }),
-    removeTripItem:(tid,iid)=>up(s=>{ const t=s.trips.find(x=>x.id===tid);
-      if(t){ const nt={...t,items:t.items.filter(i=>i.id!==iid)}; rkWriteDoc('trips',tid,nt); }
-      return {trips:s.trips.map(t=>t.id!==tid?t:{...t,items:t.items.filter(i=>i.id!==iid)})}; }),
+    // traveling (estimasi -> 1 item Matrix per trip; TIDAK menyentuh anggaran bulanan)
+    saveTrip:t=>up(s=>{
+      const est=(t.segments||[]).reduce((a,sg)=>a+(sg.estItems||[]).reduce((b,e)=>b+(e.amount||0),0),0);
+      let matrixItems=[...s.matrixItems]; let matrixId=t.matrixId;
+      const existing=matrixId?matrixItems.find(m=>m.id===matrixId):null;
+      let writeMatrix=null, delMatrixId=null;
+      const my=asDate(t.start).getFullYear(), mm=asDate(t.start).getMonth()+1;
+      if(est>0){
+        if(existing){ const nm={...existing,title:'\uD83C\uDF92 '+t.dest,amount:est,year:my,month:mm,sourceType:'trip',sourceId:t.id};
+          matrixItems=matrixItems.map(m=>m.id===matrixId?nm:m); writeMatrix=nm; }
+        else { matrixId=newId('m'); const nm={id:matrixId,title:'\uD83C\uDF92 '+t.dest,amount:est,quadrant:'n',year:my,month:mm,done:false,by:t.by||'azwar',sourceType:'trip',sourceId:t.id};
+          matrixItems=[...matrixItems,nm]; writeMatrix=nm; }
+      } else if(existing){ delMatrixId=matrixId; matrixItems=matrixItems.filter(m=>m.id!==matrixId); matrixId=undefined; }
+      const rec={...t,matrixId};
+      rkWriteDoc('trips',rec.id,rec);
+      if(writeMatrix) rkWriteDoc('matrixItems',writeMatrix.id,writeMatrix);
+      if(delMatrixId) rkDeleteDoc('matrixItems',delMatrixId);
+      const exists=s.trips.some(x=>x.id===rec.id);
+      return {trips: exists? s.trips.map(x=>x.id===rec.id?rec:x) : [rec,...s.trips], matrixItems};
+    }),
+    deleteTripFull:id=>up(s=>{ const t=s.trips.find(x=>x.id===id);
+      rkDeleteDoc('trips',id);
+      if(t&&t.matrixId) rkDeleteDoc('matrixItems',t.matrixId);
+      return {trips:s.trips.filter(x=>x.id!==id),
+              matrixItems:t&&t.matrixId?s.matrixItems.filter(m=>m.id!==t.matrixId):s.matrixItems}; }),
     setPayday:d=>up(s=>{ const ns={...s.settings,paydayDefault:d}; rkWriteSettings(ns);
       return {settings:ns}; }),
     setPeriodOverride:(key,start,end)=>up(s=>{ const ns={...s.settings,periodOverrides:{...(s.settings.periodOverrides||{}),[key]:{start,end}}}; rkWriteSettings(ns);
@@ -1706,7 +1746,7 @@ function SheetRouter({sheet,ctx}){
     tx:TxSheet, plan:PlanSheet, category:CategorySheet, matrixItem:MatrixItemSheet,
     event:EventSheet, maintenance:MaintenanceSheet, eventCategory:EventCategorySheet,
     journal:JournalSheet, reflection:ReflectionSheet, conversation:ConversationSheet,
-    goal:GoalSheet, trip:TripSheet, periodEditor:PeriodEditorSheet,
+    goal:GoalSheet, trip:TripSheet, segment:SegmentSheet, periodEditor:PeriodEditorSheet,
     budgetEdit:BudgetEditSheet, paydayEdit:PaydayEditSheet, changePw:ChangePwSheet,
   };
   const Comp=map[type];
@@ -1765,7 +1805,7 @@ function HomeScreen({ctx}){
   const pengeluaran=calc.totalExpense(year,month);
   const saldo=pemasukan-pengeluaran;
   const kumulatif=calc.kumulatif();
-  const recent=[...s.transactions].sort((a,b)=>b.date-a.date).slice(0,3);
+  const recent=[...s.transactions].filter(t=>!t.tripId).sort((a,b)=>b.date-a.date).slice(0,3);
 
   return h('div',{style:{padding:'14px 18px 100px'},className:'fadein'},[
     // header
@@ -1996,6 +2036,7 @@ function weekOfMonth(d){ return Math.floor((d.getDate()-1)/7)+1; } // 1..5
 function TxTab({s,calc,q,setQ,period,setPeriod,typeF,setTypeF,today,openSheet,
                 pickerOpen,setPickerOpen,weekSel,setWeekSel,monthSel,setMonthSel,yearSel,setYearSel}){
   let list=s.transactions.filter(tx=>{
+    if(tx.tripId)return false;
     const cat=calc.catById(tx.categoryId); if(!cat)return false;
     if(typeF==='in'&&cat.type!=='income')return false;
     if(typeF==='out'&&cat.type!=='expense')return false;
@@ -2139,9 +2180,11 @@ function toInputDate(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).pad
 function fromInputDate(str){ const [y,m,d]=str.split('-').map(Number); return new Date(y,m-1,d); }
 
 /* ---- TxSheet ---- */
-function TxSheet({ctx,edit}){
+function TxSheet({ctx,edit,presetTrip}){
   const {store,account,closeSheet}=ctx; const s=store.state;
   const [type,setType]=useState(edit?(s.categories.find(c=>c.id===edit.categoryId)||{}).type||'expense':'expense');
+  const [mode,setMode]=useState(((edit&&edit.tripId)||presetTrip)?'travel':'default'); // default|travel (pengeluaran)
+  const [tripId,setTripId]=useState((edit&&edit.tripId)||presetTrip||(s.trips[0]&&s.trips[0].id)||null);
   const cats=s.categories.filter(c=>c.type===type);
   const [catId,setCatId]=useState(edit?edit.categoryId:cats[0]?.id);
   const [amount,setAmount]=useState(edit?edit.amount:0);
@@ -2149,13 +2192,31 @@ function TxSheet({ctx,edit}){
   const [date,setDate]=useState(edit?edit.date:FIN_TODAY);
   const [by,setBy]=useState(edit?edit.by:account.key);
   useEffect(()=>{ if(!cats.find(c=>c.id===catId)) setCatId(cats[0]?.id); },[type]);
+  const travel=type==='expense'&&mode==='travel';
   const save=()=>{ if(!catId||amount<=0){toast('Lengkapi kategori & nominal');return;}
     const tx={id:edit?edit.id:'',categoryId:catId,amount,date,note:note||'(tanpa catatan)',by};
-    if(edit)store.updateTx(tx); else store.addTx(tx); closeSheet(); toast(edit?'Transaksi diperbarui':'Transaksi dicatat'); };
+    if(travel&&tripId) tx.tripId=tripId; else tx.tripId=null;
+    if(edit)store.updateTx(tx); else store.addTx(tx);
+    closeSheet();
+    const tr=(travel&&tripId)?s.trips.find(t=>t.id===tripId):null;
+    toast(tr?`Tercatat → masuk budget "${tr.dest}"`:(edit?'Transaksi diperbarui':'Transaksi dicatat')); };
   return h('div',null,[
     h(SheetHeader,{key:'h',title:edit?'Edit Transaksi':'Catat Transaksi',onDelete:edit?()=>{store.deleteTx(edit.id);closeSheet();toast('Transaksi dihapus');}:null}),
     h('div',{key:'ty',className:'segsimple',style:{width:'100%',marginBottom:14}}, [['expense','Pengeluaran'],['income','Pemasukan']].map(([k,l])=>
       h('button',{key:k,className:(type===k?'active':'')+' grow',style:{flex:1},onClick:()=>setType(k)},l))),
+    type==='expense'?h('div',{key:'md',style:{marginBottom:14}},[
+      h('label',{key:'l',className:'label'},'Jenis pencatatan'),
+      h('div',{key:'sg',className:'segsimple',style:{width:'100%'}}, [['default','Default'],['travel','Travel']].map(([k,l])=>
+        h('button',{key:k,className:(mode===k?'active':'')+' grow',style:{flex:1},onClick:()=>setMode(k)},l))),
+      h('div',{key:'hint',className:'b-xs',style:{marginTop:7,color:travel?C.clay:'var(--inkSoft)',lineHeight:1.5}},
+        travel?'✈ Travel: masuk perhitungan budget trip (aktual per kategori → over/under). Dikecualikan dari saldo & "Cukup ~hari".':'Default: pengeluaran rumah tangga biasa.'),
+    ]):null,
+    travel?h('div',{key:'tp',style:{marginBottom:14}},[
+      h('label',{key:'l',className:'label'},'Untuk trip'),
+      s.trips.length? h('div',{className:'row wrap gap8'}, s.trips.map(t=>
+        h('button',{key:t.id,className:'selopt',style:tripId===t.id?{borderColor:C.clay,background:C.clay+'1a',color:C.clay}:null,onClick:()=>setTripId(t.id)},'🎒 '+t.dest)))
+        : h('div',{className:'b-sm muted'},'Belum ada trip. Buat dulu di Traveling.'),
+    ]):null,
     h('label',{key:'l1',className:'label'},'Kategori'),
     h('div',{key:'cs',className:'row wrap gap8',style:{marginBottom:14}}, cats.map(c=>
       h('button',{key:c.id,className:'selopt',style:{display:'flex',alignItems:'center',gap:6,...(catId===c.id?{borderColor:c.color,background:c.color+'1a',color:c.color}:{})},onClick:()=>setCatId(c.id)},
@@ -2168,7 +2229,7 @@ function TxSheet({ctx,edit}){
     h('input',{key:'d',className:'field',type:'date',style:{marginBottom:14},value:toInputDate(date),onChange:e=>setDate(fromInputDate(e.target.value))}),
     h('label',{key:'l5',className:'label'},'Dicatat oleh'),
     h('div',{key:'by',style:{marginBottom:18}},h(AccountToggle,{value:by,onChange:setBy})),
-    h('button',{key:'s',className:'btn btn-gold',style:{width:'100%',padding:14},onClick:save},edit?'Simpan Perubahan':'Catat'),
+    h('button',{key:'s',className:'btn',style:{width:'100%',padding:14,...(travel?{background:C.clay,color:'#fff'}:{background:C.gold,color:'#fff'})},onClick:save},edit?'Simpan Perubahan':(travel?'Catat Pengeluaran Travel':'Catat')),
   ]);
 }
 
@@ -2257,12 +2318,12 @@ function MatrixItemSheet({ctx,edit}){
 function LinkedMatrixSheet({ctx,edit}){
   const {store,closeSheet}=ctx;
   const [quadrant,setQuadrant]=useState(edit.quadrant);
-  const srcLabel=edit.sourceType==='event'?'Kalender':'Perawatan';
+  const srcLabel=edit.sourceType==='event'?'Kalender':edit.sourceType==='trip'?'Traveling':'Perawatan';
   const save=()=>{ store.updateMatrix({...edit,quadrant}); closeSheet(); toast('Kuadran diperbarui'); };
   return h('div',null,[
     h(SheetHeader,{key:'h',title:'Item Matrix'}),
     h('div',{key:'src',className:'row gap8',style:{marginBottom:14,padding:'10px 12px',borderRadius:12,background:C.gold+'14'}},[
-      h(Icon,{key:'i',name:edit.sourceType==='event'?'calendar':'build',size:16,color:C.goldDark}),
+      h(Icon,{key:'i',name:edit.sourceType==='event'?'calendar':edit.sourceType==='trip'?'location':'build',size:16,color:C.goldDark}),
       h('div',{key:'t',className:'b-sm',style:{color:C.goldDark,fontWeight:600}},`Tertaut dari ${srcLabel} — judul, harga & bulan mengikuti sumber.`),
     ]),
     h('div',{key:'ti',style:{marginBottom:6,fontWeight:800,fontSize:18}},edit.title),
@@ -2700,7 +2761,7 @@ function ScheduleScreen({ctx}){
 
 /* ---- Kalender ---- */
 function CalendarSub({ctx}){
-  const {store,openSheet}=ctx; const s=store.state;
+  const {store,openSheet,setOverlay}=ctx; const s=store.state;
   const [cursor,setCursor]=useState(new Date(TODAY.getFullYear(),TODAY.getMonth(),1));
   const [selected,setSelected]=useState(new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate()));
   const [hideDone,setHideDone]=useState(false);
@@ -2711,6 +2772,7 @@ function CalendarSub({ctx}){
   const put=(d,color,done)=>{ const k=dateKey(d); (marks[k]=marks[k]||[]).push({color,done}); };
   s.events.forEach(e=>{ const cat=catById(e.categoryId); put(e.date,cat?cat.color:C.sage,e.done); });
   s.maintenance.forEach(m=>{ const due=nextDue(m); if(due)put(due,C.clay,m.done); });
+  s.trips.forEach(t=>(t.segments||[]).forEach(sg=>put(asDate(sg.date),C.clay,false)));
 
   const first=new Date(cursor.getFullYear(),cursor.getMonth(),1);
   const startDow=first.getDay();
@@ -2726,6 +2788,7 @@ function CalendarSub({ctx}){
   const agenda=[];
   s.events.forEach(e=>{ if(e.date.getFullYear()===cursor.getFullYear()&&e.date.getMonth()===cursor.getMonth()){ const cat=catById(e.categoryId); agenda.push({date:e.date,title:e.title,color:cat?cat.color:C.sage,done:e.done,maint:false}); }});
   s.maintenance.forEach(m=>{ const due=nextDue(m); if(due&&due.getFullYear()===cursor.getFullYear()&&due.getMonth()===cursor.getMonth()) agenda.push({date:due,title:m.name,color:C.clay,done:m.done,maint:true}); });
+  s.trips.forEach(t=>(t.segments||[]).forEach(sg=>{ const d=asDate(sg.date); if(d.getFullYear()===cursor.getFullYear()&&d.getMonth()===cursor.getMonth()) agenda.push({date:d,title:'\uD83C\uDF92 '+sg.activity,color:C.clay,done:false,maint:false}); }));
   agenda.sort((a,b)=>a.date-b.date);
 
   return h('div',{style:{padding:16}},[
@@ -2783,6 +2846,15 @@ function CalendarSub({ctx}){
             subtitle:'Perawatan', // REV 3: tanpa nominal
             trailingChip:'Perawatan',trailingChipColor:C.clay,onToggle:v=>store.toggleMaint(m.id,v),onTap:null})));
         });
+        s.trips.forEach(t=>(t.segments||[]).forEach(sg=>{ if(!sameDay(asDate(sg.date),selected))return;
+          rows.push(h('div',{key:'tp'+sg.id,style:{marginBottom:8}},h('div',{className:'taskcard'},[
+            h('span',{key:'e',style:{fontSize:18,width:24,textAlign:'center'}},TRANSPORT[sg.transport]||'\uD83C\uDF92'),
+            h('div',{key:'g',className:'grow',style:{cursor:'pointer'},onClick:()=>{window.__openTripId=t.id;setOverlay('trip');}},[
+              h('div',{key:'t',style:{fontWeight:600}},sg.activity),
+              h('div',{key:'s',className:'b-sm muted'},(sg.startTime?fmtTime(sg.startTime)+' \u00b7 ':'')+t.dest),
+            ]),
+            h('span',{key:'c',className:'chip',style:{background:C.clay+'1f',color:C.clay}},'\uD83C\uDF92 Trip'),
+          ]))); }));
         return rows.length?rows:[h('div',{key:'e',className:'muted b-sm',style:{padding:'4px 0'}},'Belum ada agenda.')];
       })(),
     ]),
@@ -3434,88 +3506,258 @@ function toastUndo(msg,onUndo){
 }
 
 /* =====================================================================
-   TRAVELING — daftar perjalanan + checklist bawaan
+   TRAVELING — Persiapan (checklist gabungan) + Rencana (itinerary per agenda)
+   Estimasi per kategori → 1 item Matrix per trip (tak menyentuh anggaran bulanan).
+   Aktual dari transaksi bertanda tripId (dikecualikan dari kalkulasi keuangan).
+   Agenda diturunkan (read-only) ke Kalender.
    ===================================================================== */
 function tripDurasi(a,b){ const d=Math.round((new Date(b.getFullYear(),b.getMonth(),b.getDate())-new Date(a.getFullYear(),a.getMonth(),a.getDate()))/86400000)+1; return d; }
+function tripActualTx(s,t){ return s.transactions.filter(x=>x.tripId===t.id); }
+function tripActual(s,t){ return tripActualTx(s,t).reduce((a,x)=>a+x.amount,0); }
+function estByCat(t){ const m={}; (t.segments||[]).forEach(sg=>(sg.estItems||[]).forEach(e=>{ m[e.categoryId]=(m[e.categoryId]||0)+e.amount; })); return m; }
+function actByCat(s,t){ const m={}; tripActualTx(s,t).forEach(x=>{ m[x.categoryId]=(m[x.categoryId]||0)+x.amount; }); return m; }
+function segTimeLabel(sg){
+  if(!sg.startTime) return 'waktu belum diatur';
+  if(sg.mode==='duration'){ const end=addMinTime(sg.startTime,sg.durationMin); return `${fmtTime(sg.startTime)}–${fmtTime(end)} · ${fmtDurMin(sg.durationMin)}`; }
+  return `${fmtTime(sg.startTime)}–${fmtTime(sg.endTime)} · ${fmtDurMin(diffMinTime(sg.startTime,sg.endTime))}`;
+}
+
 function TripScreen({ctx}){
   const {store,setOverlay,openSheet}=ctx; const s=store.state;
-  const [openId,setOpenId]=useState(s.trips[0]?s.trips[0].id:null);
+  const initOpen=(function(){ const v=window.__openTripId; window.__openTripId=undefined; return v||null; })();
+  const [openId,setOpenId]=useState(initOpen);
+  const trip=openId?s.trips.find(t=>t.id===openId):null;
+  if(trip) return h(TripDetail,{ctx,trip,onBack:()=>setOpenId(null)});
   const trips=[...s.trips].sort((a,b)=>a.start-b.start);
   return h('div',{style:{paddingBottom:40},className:'fadein'},[
     h(OverlayHeader,{key:'h',title:'Traveling',onBack:()=>setOverlay(null),
-      action:h('button',{className:'btn btn-clay btn-sm',style:{background:C.clay,color:'#fff'},onClick:()=>openSheet('trip')},[h(Icon,{key:'i',name:'plus',size:16,color:'#fff'}),'Trip'])}),
+      action:h('button',{className:'btn btn-sm',style:{background:C.clay,color:'#fff'},onClick:()=>openSheet('trip')},[h(Icon,{key:'i',name:'plus',size:16,color:'#fff'}),'Trip'])}),
     h('div',{key:'bd',style:{padding:'8px 18px 0'}},
       trips.length===0
-      ? h(EmptyTab,{key:'e',title:'Belum ada rencana perjalanan',body:'Tekan "+ Trip" untuk membuat checklist perjalanan pertamamu.'})
-      : trips.map(t=>h(TripCard,{key:t.id,t,open:openId===t.id,onToggle:()=>setOpenId(openId===t.id?null:t.id),ctx}))),
+      ? h(EmptyTab,{key:'e',title:'Belum ada rencana perjalanan',body:'Tekan "+ Trip" untuk membuat perjalanan pertamamu, lalu susun agenda per hari.'})
+      : trips.map(t=>h(TripListCard,{key:t.id,t,ctx,onOpen:()=>setOpenId(t.id)}))),
   ]);
 }
-function TripCard({t,open,onToggle,ctx}){
-  const {store,openSheet}=ctx;
-  const [newItem,setNewItem]=useState('');
-  const done=t.items.filter(i=>i.done).length, total=t.items.length;
-  const pct=total?done/total:0;
+
+function TripListCard({t,ctx,onOpen}){
+  const s=ctx.store.state;
+  const est=tripEst(t), actual=tripActual(s,t);
   const durasi=tripDurasi(t.start,t.end);
-  const add=()=>{ const v=newItem.trim(); if(!v)return; store.addTripItem(t.id,v); setNewItem(''); };
-  return h('div',{style:{marginBottom:12}},h(Card,{pad:false,style:{padding:0,overflow:'hidden'}},[
-    // header
-    h('button',{key:'hd',style:{width:'100%',textAlign:'left',padding:14,display:'flex',flexDirection:'column',gap:10},onClick:onToggle},[
-      h('div',{key:'top',className:'row gap10'},[
-        h('div',{key:'ic',style:{width:42,height:42,borderRadius:12,background:C.clay+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},h(Icon,{name:'location',size:20,color:C.clay})),
-        h('div',{key:'g',className:'grow',style:{minWidth:0}},[
-          h('div',{key:'d',style:{fontWeight:800,fontSize:16},className:'clamp2'},t.dest),
-          h('div',{key:'m',className:'b-sm muted'},`${tanggal(t.start)} – ${tanggal(t.end)} · ${durasi} hari`),
-        ]),
-        h(Icon,{key:'c',name:open?'up':'down',size:18,color:'var(--inkSoft)'}),
+  const total=(t.segments||[]).reduce((a,sg)=>a+sg.prep.length,0);
+  const done=(t.segments||[]).reduce((a,sg)=>a+sg.prep.filter(p=>p.done).length,0);
+  const over=actual>est&&est>0; const future=asDate(t.start)>todayD;
+  return h('div',{style:{marginBottom:12}},h(Card,{onClick:onOpen,style:{cursor:'pointer'}},[
+    h('div',{key:'top',className:'row gap12'},[
+      h('div',{key:'ic',style:{width:44,height:44,borderRadius:12,background:C.clay+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},h(Icon,{name:'location',size:20,color:C.clay})),
+      h('div',{key:'g',className:'grow',style:{minWidth:0}},[
+        h('div',{key:'d',style:{fontWeight:800,fontSize:16},className:'clamp2'},t.dest),
+        h('div',{key:'m',className:'b-sm muted'},`${tanggal(t.start)} – ${tanggal(t.end)} · ${durasi} hari`),
       ]),
-      t.note?h('div',{key:'nt',className:'b-sm muted',style:{fontStyle:'italic'}},t.note):null,
-      // progress checklist
-      h('div',{key:'pr',style:{width:'100%'}},[
-        h('div',{key:'l',className:'between',style:{marginBottom:4}},[
-          h('span',{key:'a',className:'b-xs muted',style:{fontWeight:600}},`Checklist bawaan ${done}/${total}`),
-          h('span',{key:'b',className:'b-xs',style:{fontWeight:700,color:pct>=1?C.income:C.clay}},pct>=1?'Siap! 🎒':`${Math.round(pct*100)}%`),
-        ]),
-        h('div',{key:'p',className:'progress',style:{height:7}},h('div',{style:{width:(pct*100)+'%',background:pct>=1?C.income:C.clay}})),
-      ]),
+      h(Icon,{key:'c',name:'right',size:18,color:'var(--inkSoft)'}),
     ]),
-    // body checklist
-    open?h('div',{key:'bd',style:{padding:'0 14px 14px'}},[
-      ...t.items.map(i=>h('div',{key:i.id,className:'row gap10',style:{padding:'8px 0',borderTop:'1px solid var(--line)'}},[
-        h(Check,{key:'c',on:i.done,onChange:()=>store.toggleTripItem(t.id,i.id),size:20}),
-        h('span',{key:'t',className:'grow'+(i.done?' strike':''),style:{fontSize:14,color:i.done?'var(--inkSoft)':'var(--ink)'}},i.text),
-        h('button',{key:'x',className:'iconbtn-sm',onClick:()=>store.removeTripItem(t.id,i.id)},h(Icon,{name:'close',size:14,color:'var(--inkSoft)'})),
-      ])),
-      // tambah item
-      h('div',{key:'add',className:'row gap8',style:{marginTop:10}},[
-        h('input',{key:'in',className:'field grow',value:newItem,placeholder:'Tambah barang…',onChange:e=>setNewItem(e.target.value),onKeyDown:e=>{if(e.key==='Enter')add();}}),
-        h('button',{key:'b',className:'btn btn-clay',style:{background:C.clay,color:'#fff',padding:'0 16px'},onClick:add},h(Icon,{name:'plus',size:18,color:'#fff'})),
-      ]),
-      // aksi
-      h('div',{key:'act',className:'row gap8',style:{marginTop:12}},[
-        h('button',{key:'e',className:'btn btn-ghost grow',onClick:()=>openSheet('trip',{edit:t})},[h(Icon,{key:'i',name:'edit',size:16}),'Edit']),
-        h('button',{key:'d',className:'btn grow',style:{background:C.maroon+'14',color:C.maroon},onClick:()=>{ store.deleteTrip(t.id); toastUndo('Trip dihapus',()=>store.addTrip(t)); }},[h(Icon,{key:'i',name:'trash',size:16,color:C.maroon}),'Hapus']),
-      ]),
+    (t.segments&&t.segments.length)?h('div',{key:'stat',className:'row',style:{marginTop:12,gap:8}},[
+      h(TMini,{key:'a',l:'ESTIMASI',v:rupiah(est)}),
+      h(TMini,{key:'b',l:'AKTUAL',v:rupiah(actual),color:over?C.expense:C.income}),
+      h(TMini,{key:'c',l:'BAWAAN',v:`${done}/${total}`,right:true}),
+    ]):h('div',{key:'e',className:'b-sm',style:{marginTop:10,color:C.clay,fontWeight:600}},'Belum ada agenda — ketuk untuk menyusun →'),
+    (t.segments&&t.segments.length)?h('div',{key:'bd',className:'row gap6',style:{marginTop:10}},[
+      future?h('span',{key:'f',className:'chip',style:{background:C.teal+'1a',color:C.teal}},'Akan datang'):h('span',{key:'p',className:'chip',style:{background:C.gold+'1a',color:C.goldDark}},'Berlangsung/lalu'),
+      over?h('span',{key:'o',className:'chip',style:{background:C.expense+'1a',color:C.expense}},'Over budget'):(est>0?h('span',{key:'u',className:'chip',style:{background:C.income+'1a',color:C.income}},'Sesuai/di bawah'):null),
     ]):null,
   ]));
 }
+function TMini({l,v,color,right}){ return h('div',{style:{flex:right?'0 0 auto':1}},[
+  h('div',{key:'l',className:'b-xs muted',style:{fontWeight:700,marginBottom:2,textAlign:right?'right':'left'}},l),
+  h('div',{key:'v',style:{fontWeight:800,fontSize:14.5,color:color||'var(--ink)',textAlign:right?'right':'left'}},v),
+]); }
+
+function TripDetail({ctx,trip,onBack}){
+  const {store,openSheet}=ctx; const s=store.state;
+  const t=s.trips.find(x=>x.id===trip.id)||trip;
+  const [tab,setTab]=useState(1);
+  const est=tripEst(t), actual=tripActual(s,t);
+  const over=actual>est&&est>0; const selisih=est-actual;
+  const eb=estByCat(t), ab=actByCat(s,t);
+  const catIds=Array.from(new Set([...Object.keys(eb),...Object.keys(ab)]));
+  const catById=id=>s.categories.find(c=>c.id===id)||{id,name:'Lainnya',color:C.inkSoft};
+  return h('div',{style:{paddingBottom:40},className:'fadein'},[
+    h(OverlayHeader,{key:'h',title:t.dest,onBack,
+      action:h('button',{className:'iconbtn',onClick:()=>openSheet('trip',{edit:t})},h(Icon,{name:'edit',size:17,color:'var(--ink)'}))}),
+    h('div',{key:'bd',style:{padding:'6px 18px 0'}},[
+      h('div',{key:'sub',className:'b-sm muted',style:{marginBottom:12}},`${tanggal(t.start)} – ${tanggal(t.end)} · ${tripDurasi(t.start,t.end)} hari`),
+      // ringkasan
+      h(Card,{key:'sum',style:{marginBottom:12}},[
+        h('div',{key:'r',className:'row',style:{gap:10}},[
+          h(TSum,{key:'e',label:'Estimasi',val:rupiah(est)}),
+          h('div',{key:'d1',style:{width:1,alignSelf:'stretch',background:'var(--line)'}}),
+          h(TSum,{key:'a',label:'Aktual',val:rupiah(actual),color:over?C.expense:C.income}),
+          h('div',{key:'d2',style:{width:1,alignSelf:'stretch',background:'var(--line)'}}),
+          h(TSum,{key:'s',label:over?'Over':'Sisa',val:rupiah(Math.abs(selisih)),color:over?C.expense:C.teal}),
+        ]),
+        est>0?h('div',{key:'bar',style:{marginTop:12}},[
+          h('div',{key:'p',className:'progress',style:{height:8}},h('div',{style:{width:Math.min(100,actual/est*100)+'%',background:over?C.expense:C.income}})),
+          h('div',{key:'l',className:'between',style:{marginTop:6}},[
+            h('span',{key:'a',className:'b-xs muted',style:{fontWeight:700}},`${Math.round(actual/est*100)}% terpakai`),
+            h('span',{key:'b',className:'b-xs',style:{fontWeight:800,color:over?C.expense:C.income}},over?'⚠ Over budget':'✓ Aman'),
+          ]),
+        ]):null,
+      ]),
+      // per kategori
+      catIds.length?h(Card,{key:'cat',style:{marginBottom:12}},[
+        h('div',{key:'h',className:'between',style:{marginBottom:10}},[
+          h('span',{key:'a',style:{fontWeight:800,fontSize:14.5}},'Per kategori'),
+          h('span',{key:'b',className:'b-xs muted',style:{fontWeight:700}},'aktual / estimasi'),
+        ]),
+        ...catIds.map(cid=>{ const c=catById(cid); const e=eb[cid]||0,a=ab[cid]||0; const unplanned=e===0&&a>0; const ov=a>e&&e>0; const pct=e?Math.min(100,a/e*100):(a>0?100:0);
+          return h('div',{key:cid,style:{marginBottom:11}},[
+            h('div',{key:'l',className:'between',style:{marginBottom:5}},[
+              h('span',{key:'n',className:'row gap6',style:{fontWeight:700,fontSize:13.5}},[h('span',{key:'d',style:{width:8,height:8,borderRadius:8,background:c.color}}),c.name,
+                unplanned?h('span',{key:'x',className:'b-xs',style:{color:C.clay,fontWeight:800}},'· tak dianggarkan'):(ov?h('span',{key:'x',className:'b-xs',style:{color:C.expense,fontWeight:800}},'· over'):null)]),
+              h('span',{key:'v',className:'b-sm',style:{fontWeight:700}},[h('span',{key:'x',style:{color:(ov||unplanned)?C.expense:C.income}},rupiah(a)),h('span',{key:'y',className:'muted'},` / ${rupiah(e)}`)]),
+            ]),
+            h('div',{key:'p',className:'progress',style:{height:6}},h('div',{style:{width:pct+'%',background:(ov||unplanned)?C.expense:c.color}})),
+          ]);
+        }),
+      ]):null,
+      // banner integrasi
+      h('div',{key:'bn',className:'row gap8',style:{marginBottom:14,padding:'10px 12px',borderRadius:12,background:C.teal+'12'}},[
+        h(Icon,{key:'i',name:'repeat',size:16,color:C.teal}),
+        h('div',{key:'t',className:'b-sm',style:{color:C.teal,lineHeight:1.5}},['Estimasi → ',h('b',{key:1},'Matrix'),' · agenda → ',h('b',{key:2},'Kalender'),' · aktual ← transaksi ',h('b',{key:3},'Anggaran'),' bertanda Travel.']),
+      ]),
+      // catat pengeluaran trip
+      h('button',{key:'catat',className:'btn btn-sm',style:{width:'100%',marginBottom:14,background:C.clay,color:'#fff',padding:12},onClick:()=>openSheet('tx',{presetTrip:t.id})},[h(Icon,{name:'plus',size:16,color:'#fff'}),'Catat pengeluaran trip ini']),
+      // tab
+      h('div',{key:'sg',className:'segsimple',style:{width:'100%',marginBottom:14}}, ['Persiapan','Rencana'].map((l,i)=>
+        h('button',{key:i,className:(tab===i?'active':'')+' grow',style:{flex:1},onClick:()=>setTab(i)},l))),
+      tab===0?h(PrepView,{key:'p',t,ctx}):h(PlanRencanaView,{key:'r',t,ctx}),
+    ]),
+  ]);
+}
+function TSum({label,val,color}){ return h('div',{style:{flex:1,textAlign:'center'}},[
+  h('div',{key:'l',className:'b-xs muted',style:{fontWeight:700,marginBottom:3}},label),
+  h('div',{key:'v',style:{fontWeight:800,fontSize:15,color:color||'var(--ink)'}},val),
+]); }
+
+/* ---- Persiapan (checklist gabungan seluruh agenda) ---- */
+function PrepView({t,ctx}){
+  const all=(t.segments||[]).reduce((a,sg)=>a+sg.prep.length,0);
+  const done=(t.segments||[]).reduce((a,sg)=>a+sg.prep.filter(p=>p.done).length,0);
+  const pct=all?done/all:0;
+  if(!t.segments||!t.segments.length) return h(EmptyTab,{title:'Belum ada barang bawaan',body:'Tambahkan agenda di tab Rencana — daftar bawaannya muncul otomatis di sini.'});
+  return h('div',null,[
+    h(Card,{key:'p',style:{marginBottom:12}},[
+      h('div',{key:'l',className:'between',style:{marginBottom:8}},[
+        h('span',{key:'a',style:{fontWeight:800,fontSize:14.5}},'Total bawaan'),
+        h('span',{key:'b',style:{fontWeight:800,color:pct>=1?C.income:C.clay}},pct>=1?'Siap! 🎒':`${done}/${all}`),
+      ]),
+      h('div',{key:'pr',className:'progress',style:{height:8}},h('div',{style:{width:pct*100+'%',background:pct>=1?C.income:C.clay}})),
+    ]),
+    ...t.segments.map(sg=>h(PrepGroup,{key:sg.id,t,sg,ctx})),
+  ]);
+}
+function PrepGroup({t,sg,ctx}){
+  const {store}=ctx; const [txt,setTxt]=useState('');
+  const toggle=p=>{ const nt={...t,segments:t.segments.map(x=>x.id!==sg.id?x:{...x,prep:x.prep.map(q=>q.id===p.id?{...q,done:!q.done}:q)})}; store.saveTrip(nt); };
+  const remove=p=>{ const nt={...t,segments:t.segments.map(x=>x.id!==sg.id?x:{...x,prep:x.prep.filter(q=>q.id!==p.id)})}; store.saveTrip(nt); };
+  const add=()=>{ const v=txt.trim(); if(!v)return; const nt={...t,segments:t.segments.map(x=>x.id!==sg.id?x:{...x,prep:[...x.prep,{id:newId('i'),text:v,done:false}]})}; store.saveTrip(nt); setTxt(''); };
+  return h('div',{style:{marginBottom:12}},h(Card,{},[
+    h('div',{key:'h',className:'row gap8',style:{marginBottom:10}},[
+      h('span',{key:'e',style:{fontSize:16}},TRANSPORT[sg.transport]||'📍'),
+      h('div',{key:'g',className:'grow'},[
+        h('div',{key:'a',style:{fontWeight:800,fontSize:14}},sg.activity||'Agenda'),
+        h('div',{key:'b',className:'b-xs muted'},`${HARI[asDate(sg.date).getDay()]}, ${asDate(sg.date).getDate()} ${BULAN_SG[asDate(sg.date).getMonth()]} · ${segTimeLabel(sg)}`),
+      ]),
+    ]),
+    sg.prep.length===0?h('div',{key:'e',className:'b-sm muted',style:{padding:'2px 0 8px'}},'Belum ada barang.'):
+    sg.prep.map(p=>h('div',{key:p.id,className:'row gap10',style:{padding:'7px 0',borderTop:'1px solid var(--line)'}},[
+      h(Check,{key:'c',on:p.done,onChange:()=>toggle(p),size:20}),
+      h('span',{key:'t',className:'grow'+(p.done?' strike':''),style:{fontSize:14,color:p.done?'var(--inkSoft)':'var(--ink)'}},p.text),
+      h('button',{key:'x',className:'iconbtn-sm',onClick:()=>remove(p)},h(Icon,{name:'close',size:14,color:'var(--inkSoft)'})),
+    ])),
+    h('div',{key:'add',className:'row gap8',style:{marginTop:10}},[
+      h('input',{key:'in',className:'field grow',value:txt,placeholder:'Tambah barang…',onChange:e=>setTxt(e.target.value),onKeyDown:e=>{if(e.key==='Enter')add();}}),
+      h('button',{key:'b',className:'btn',style:{background:C.clay,color:'#fff',padding:'0 16px'},onClick:add},h(Icon,{name:'plus',size:18,color:'#fff'})),
+    ]),
+  ]));
+}
+
+/* ---- Rencana (itinerary per hari) ---- */
+function PlanRencanaView({t,ctx}){
+  const {store,openSheet}=ctx; const s=store.state;
+  if(!t.segments||!t.segments.length) return h('div',null,[
+    h(EmptyTab,{key:'e',title:'Susun agenda perjalanan',body:'Tambahkan detail: tanggal, jam, lokasi, moda transport (Via), aktivitas, bawaan, dan estimasi per kategori.'}),
+    h('button',{key:'a',className:'btn',style:{width:'100%',background:C.clay,color:'#fff',padding:12,marginTop:4},onClick:()=>openSheet('segment',{tripId:t.id})},[h(Icon,{name:'plus',size:17,color:'#fff'}),'Tambah Agenda']),
+  ]);
+  const days={}; t.segments.forEach(sg=>{ const k=dateKey(asDate(sg.date)); (days[k]=days[k]||[]).push(sg); });
+  const keys=Object.keys(days).sort();
+  return h('div',null,[
+    ...keys.map((k,di)=>{
+      const list=days[k].sort((a,b)=>(a.startTime?a.startTime.h*60+a.startTime.m:0)-(b.startTime?b.startTime.h*60+b.startTime.m:0));
+      const d=asDate(list[0].date);
+      const estDay=list.reduce((a,sg)=>a+segEst(sg),0);
+      const actDay=tripActualTx(s,t).filter(x=>dateKey(asDate(x.date))===k).reduce((a,x)=>a+x.amount,0);
+      const over=actDay>estDay&&estDay>0;
+      return h('div',{key:k,style:{marginBottom:16}},[
+        h('div',{key:'dh',className:'between',style:{margin:'2px 2px 9px'}},[
+          h('div',{key:'a',className:'row gap8'},[
+            h('div',{key:'n',style:{width:26,height:26,borderRadius:9,background:C.teal,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:13}},di+1),
+            h('div',{key:'l',style:{fontWeight:800,fontSize:14}},`${HARI[d.getDay()]}, ${d.getDate()} ${BULAN_SG[d.getMonth()]}`),
+          ]),
+          h('div',{key:'b',className:'b-xs',style:{fontWeight:700,color:over?C.expense:'var(--inkSoft)'}},`${rupiah(actDay)} / ${rupiah(estDay)}`),
+        ]),
+        ...list.map(sg=>h(SegCard,{key:sg.id,t,sg,ctx})),
+      ]);
+    }),
+    h('button',{key:'add',className:'btn btn-ghost',style:{width:'100%',marginTop:2,borderStyle:'dashed'},onClick:()=>openSheet('segment',{tripId:t.id})},[h(Icon,{name:'plus',size:17}),'Tambah Agenda']),
+  ]);
+}
+function SegCard({t,sg,ctx}){
+  const {store,openSheet}=ctx; const s=store.state;
+  const donePrep=sg.prep.filter(p=>p.done).length; const est=segEst(sg);
+  const catById=id=>s.categories.find(c=>c.id===id);
+  return h('div',{style:{marginBottom:10}},h(Card,{style:{cursor:'pointer'},onClick:()=>openSheet('segment',{tripId:t.id,edit:sg})},[
+    h('div',{key:'top',className:'row gap10',style:{alignItems:'flex-start'}},[
+      h('div',{key:'time',style:{flexShrink:0,textAlign:'center',minWidth:48}},[
+        h('div',{key:'a',style:{fontWeight:800,fontSize:15,color:C.clay}},sg.startTime?fmtTime(sg.startTime):'—'),
+        h('div',{key:'b',className:'b-xs muted',style:{marginTop:1}},sg.mode==='duration'?fmtDurMin(sg.durationMin):(sg.endTime?'s/d '+fmtTime(sg.endTime):'')),
+      ]),
+      h('div',{key:'ln',style:{width:2,alignSelf:'stretch',background:'var(--line)',borderRadius:2,margin:'2px 0'}}),
+      h('div',{key:'g',className:'grow',style:{minWidth:0}},[
+        h('div',{key:'act',className:'row gap6',style:{alignItems:'center'}},[
+          sg.transport?h('span',{key:'tr',style:{fontSize:15}},TRANSPORT[sg.transport]):null,
+          h('span',{key:'a',style:{fontWeight:800,fontSize:15}},sg.activity||'—'),
+        ]),
+        sg.location?h('div',{key:'loc',className:'row gap6',style:{marginTop:3}},[h(Icon,{key:'i',name:'location',size:13,color:'var(--inkSoft)'}),h('span',{key:'t',className:'b-sm muted'},sg.location)]):null,
+        h('div',{key:'meta',className:'row wrap gap6',style:{marginTop:9}},[
+          est>0?h('span',{key:'e',className:'chip',style:{background:C.gold+'1f',color:C.goldDark}},rupiah(est)):null,
+          sg.prep.length>0?h('span',{key:'p',className:'chip',style:{background:C.clay+'1a',color:C.clay}},`🎒 ${donePrep}/${sg.prep.length}`):null,
+          h('span',{key:'c',className:'chip',style:{background:C.teal+'1a',color:C.teal}},'🗓 Kalender'),
+        ]),
+      ]),
+    ]),
+  ]));
+}
+
+/* ---- Trip shell (langkah 1) ---- */
 function TripSheet({ctx,edit}){
-  const {store,closeSheet}=ctx;
+  const {store,account,closeSheet,setOverlay}=ctx;
   const [dest,setDest]=useState(edit?edit.dest:'');
   const [note,setNote]=useState(edit?edit.note||'':'');
   const [start,setStart]=useState(edit?toInputDate(edit.start):toInputDate(todayD));
   const [end,setEnd]=useState(edit?toInputDate(edit.end):toInputDate(todayD));
-  const [tpl,setTpl]=useState('Umum');
+  const [by,setBy]=useState(edit?(edit.by||account.key):account.key);
   const save=()=>{
     if(!dest.trim()){toast('Isi tujuan perjalanan');return;}
     const sD=fromInputDate(start), eD=fromInputDate(end);
     if(eD<sD){toast('Tanggal selesai sebelum mulai');return;}
-    if(edit){ store.updateTrip({...edit,dest:dest.trim(),note:note.trim(),start:sD,end:eD}); toast('Trip diperbarui'); }
-    else{ const items=(TRIP_TEMPLATES[tpl]||[]).map((text,i)=>({id:newId('i'),text,done:false}));
-      store.addTrip({dest:dest.trim(),note:note.trim(),start:sD,end:eD,items}); toast('Trip dibuat 🎒'); }
+    if(edit){ store.saveTrip({...edit,dest:dest.trim(),note:note.trim(),start:sD,end:eD,by}); toast('Trip diperbarui'); }
+    else{ const id=newId('tr'); store.saveTrip({id,dest:dest.trim(),note:note.trim(),start:sD,end:eD,by,matrixId:undefined,segments:[]}); toast('Trip dibuat 🎒 — susun agendanya'); window.__openTripId=id; setOverlay(null); setTimeout(()=>setOverlay('trip'),0); }
     closeSheet();
   };
   return h('div',null,[
-    h(SheetHeader,{key:'h',title:edit?'Edit Trip':'Trip Baru'}),
+    h(SheetHeader,{key:'h',title:edit?'Edit Trip':'Trip Baru',
+      onDelete:edit?()=>{ store.deleteTripFull(edit.id); closeSheet(); toastUndo('Trip dihapus',()=>store.saveTrip(edit)); window.__openTripId=undefined; setOverlay(null); setTimeout(()=>setOverlay('trip'),0); }:null}),
+    h('div',{key:'note',className:'b-sm muted',style:{marginBottom:14,lineHeight:1.5}},'Langkah 1: buat cangkang perjalanan. Detail agenda (jam, lokasi, biaya) ditambahkan setelahnya.'),
     h('label',{key:'l0',className:'label'},'Tujuan'),
     h('input',{key:'d',className:'field',style:{marginBottom:14},value:dest,placeholder:'mis. Pantai Parangtritis',onChange:e=>setDest(e.target.value)}),
     h('div',{key:'dt',className:'row gap10',style:{marginBottom:14}},[
@@ -3524,13 +3766,125 @@ function TripSheet({ctx,edit}){
     ]),
     h('label',{key:'l2',className:'label'},'Catatan (opsional)'),
     h('input',{key:'n',className:'field',style:{marginBottom:14},value:note,placeholder:'mis. Liburan keluarga',onChange:e=>setNote(e.target.value)}),
-    !edit?h('div',{key:'tpl'},[
-      h('label',{key:'l',className:'label'},'Template checklist'),
-      h('div',{key:'g',className:'catscroll',style:{marginBottom:6}}, Object.keys(TRIP_TEMPLATES).map(k=>
-        h('button',{key:k,className:'catchip'+(tpl===k?' active':''),onClick:()=>setTpl(k)},k))),
-      h('div',{key:'h',className:'b-xs muted',style:{marginBottom:16}},`${(TRIP_TEMPLATES[tpl]||[]).length} barang otomatis ditambahkan (bisa diubah nanti).`),
-    ]):null,
-    h('button',{key:'s',className:'btn',style:{width:'100%',padding:14,background:C.clay,color:'#fff'},onClick:save},edit?'Simpan':'Buat Trip'),
+    h('label',{key:'l3',className:'label'},'Dibuat oleh'),
+    h('div',{key:'by',style:{marginBottom:18}},h(AccountToggle,{value:by,onChange:setBy})),
+    h('button',{key:'s',className:'btn',style:{width:'100%',padding:14,background:C.clay,color:'#fff'},onClick:save},edit?'Simpan Perubahan':'Buat Trip'),
+  ]);
+}
+
+/* ---- Agenda / Segment (langkah 2) ---- */
+function SegmentSheet({ctx,tripId,edit}){
+  const {store,closeSheet}=ctx; const s=store.state;
+  const trip=s.trips.find(t=>t.id===tripId);
+  const expenseCats=s.categories.filter(c=>c.type==='expense');
+  const [date,setDate]=useState(edit?toInputDate(asDate(edit.date)):toInputDate(trip?trip.start:todayD));
+  const [start,setStart]=useState(edit&&edit.startTime?toTimeInput(edit.startTime):'08:00');
+  const [mode,setMode]=useState(edit?edit.mode:'until');
+  const [end,setEnd]=useState(edit&&edit.endTime?toTimeInput(edit.endTime):'10:00');
+  const [durMin,setDurMin]=useState(edit&&edit.durationMin?edit.durationMin:120);
+  const [loc,setLoc]=useState(edit?edit.location:'');
+  const [transport,setTransport]=useState(edit?(edit.transport||'mobil'):'mobil');
+  const [act,setAct]=useState(edit?edit.activity:'');
+  const [prep,setPrep]=useState(edit?edit.prep.map(p=>({...p})):[]);
+  const [pTxt,setPTxt]=useState('');
+  const [estItems,setEstItems]=useState(edit?edit.estItems.map(e=>({...e})):[{id:newId('e'),categoryId:expenseCats[0]?expenseCats[0].id:'makan',amount:0}]);
+  const [newCatName,setNewCatName]=useState(''); const [showNewCat,setShowNewCat]=useState(false);
+
+  const addPrepLocal=()=>{ const v=pTxt.trim(); if(!v)return; setPrep([...prep,{id:newId('i'),text:v,done:false}]); setPTxt(''); };
+  const durPresets=[[60,'1 jam'],[120,'2 jam'],[180,'3 jam'],[240,'4 jam']];
+  const st=parseTimeStr(start);
+  const preview=mode==='duration'?(st?`${fmtTime(st)}–${fmtTime(addMinTime(st,durMin))} (${fmtDurMin(durMin)})`:''):(st&&parseTimeStr(end)?`${fmtTime(st)}–${fmtTime(parseTimeStr(end))} (${fmtDurMin(diffMinTime(st,parseTimeStr(end)))})`:'');
+  const estTotal=estItems.reduce((a,e)=>a+(e.amount||0),0);
+  const setLine=(id,patch)=>setEstItems(estItems.map(e=>e.id===id?{...e,...patch}:e));
+  const addLine=()=>setEstItems([...estItems,{id:newId('e'),categoryId:expenseCats[0]?expenseCats[0].id:'makan',amount:0}]);
+  const rmLine=id=>setEstItems(estItems.filter(e=>e.id!==id));
+  const createCat=()=>{ const n=newCatName.trim(); if(!n)return;
+    const exist=s.categories.find(c=>c.type==='expense'&&c.name.toLowerCase()===n.toLowerCase());
+    let id;
+    if(exist){ id=exist.id; toast('Kategori sudah ada — dipakai'); }
+    else { id=newId('c'); store.addCatRaw({id,name:n,type:'expense',icon:'bag',color:C.clay,countsAsDaily:false,limit:0}); toast('Kategori ditambahkan (juga di Anggaran)'); }
+    setNewCatName(''); setShowNewCat(false);
+    setEstItems(es=>{ const last=es[es.length-1]; if(last&&last.amount===0)return es.map(e=>e.id===last.id?{...e,categoryId:id}:e); return [...es,{id:newId('e'),categoryId:id,amount:0}]; });
+  };
+  const save=()=>{
+    if(!act.trim()){toast('Isi aktivitas agenda');return;}
+    const seg={id:edit?edit.id:newId('sg'),date:fromInputDate(date),startTime:parseTimeStr(start),mode,
+      endTime:mode==='until'?parseTimeStr(end):null,durationMin:mode==='duration'?durMin:null,
+      location:loc.trim(),transport,activity:act.trim(),
+      estItems:estItems.filter(e=>e.amount>0),prep};
+    const segs=edit?trip.segments.map(x=>x.id===seg.id?seg:x):[...trip.segments,seg];
+    store.saveTrip({...trip,segments:segs});
+    closeSheet(); toast(edit?'Agenda diperbarui':'Agenda ditambahkan → tampil di Kalender');
+  };
+  const del=()=>{ const removed=edit; const segs=trip.segments.filter(x=>x.id!==edit.id); store.saveTrip({...trip,segments:segs}); closeSheet();
+    toastUndo('Agenda dihapus',()=>{ const cur=store.state.trips.find(t=>t.id===tripId); if(cur) store.saveTrip({...cur,segments:[...cur.segments,removed]}); }); };
+  const Section=(n,icon,title,child)=>h('div',{style:{marginBottom:16}},[
+    h('div',{className:'row gap8',style:{marginBottom:8,alignItems:'center'}},[
+      h('span',{style:{width:20,height:20,borderRadius:6,background:C.clay+'22',color:C.clay,fontSize:11,fontWeight:800,display:'flex',alignItems:'center',justifyContent:'center'}},n),
+      h(Icon,{name:icon,size:15,color:C.clay}),
+      h('span',{style:{fontWeight:800,fontSize:14}},title),
+    ]),
+    child,
+  ]);
+  return h('div',null,[
+    h(SheetHeader,{key:'h',title:edit?'Edit Agenda':'Agenda Baru',onDelete:edit?del:null}),
+    Section('1','calendar','Tanggal',
+      h('input',{type:'date',className:'field',value:date,min:trip?toInputDate(trip.start):undefined,max:trip?toInputDate(trip.end):undefined,onChange:e=>setDate(e.target.value)})),
+    Section('2','clock','Waktu',h('div',null,[
+      h('label',{key:'l',className:'label'},'Mulai pukul'),
+      h('input',{key:'st',type:'time',className:'field',style:{marginBottom:12},value:start,onChange:e=>setStart(e.target.value)}),
+      h('label',{key:'l2',className:'label'},'Patokan akhir'),
+      h('div',{key:'sg',className:'segsimple',style:{width:'100%',marginBottom:12}}, [['until','Sampai pukul'],['duration','Durasi']].map(([k,l])=>
+        h('button',{key:k,className:(mode===k?'active':'')+' grow',style:{flex:1},onClick:()=>setMode(k)},l))),
+      mode==='until'
+        ? h('input',{key:'end',type:'time',className:'field',value:end,onChange:e=>setEnd(e.target.value)})
+        : h('div',{key:'dur'},[
+            h('div',{key:'ch',className:'row wrap gap8',style:{marginBottom:10}},durPresets.map(([v,l])=>h('button',{key:v,className:'selopt',style:durMin===v?{borderColor:C.teal,background:C.teal+'1a',color:C.teal}:null,onClick:()=>setDurMin(v)},l))),
+            h('div',{key:'cust',className:'row gap8'},[h('input',{key:'i',className:'field grow',inputMode:'numeric',value:durMin,onChange:e=>setDurMin(parseThousand(e.target.value)),placeholder:'menit'}),h('span',{key:'u',className:'muted b-sm',style:{fontWeight:700,alignSelf:'center'}},'menit')]),
+          ]),
+      preview?h('div',{key:'pv',className:'b-sm',style:{marginTop:10,color:C.teal,fontWeight:700}},'⏱ '+preview):null,
+    ])),
+    Section('3','location','Lokasi',
+      h('input',{className:'field',value:loc,placeholder:'mis. Gumuk Pasir',onChange:e=>setLoc(e.target.value)})),
+    Section('4','car','Via (moda transport)',
+      h('div',{className:'row wrap gap8'},Object.keys(TRANSPORT).map(k=>
+        h('button',{key:k,className:'selopt',style:transport===k?{borderColor:C.teal,background:C.teal+'1a',color:C.teal}:null,onClick:()=>setTransport(k)},[h('span',{key:'e',style:{marginRight:5}},TRANSPORT[k]),TRANSPORT_LABEL[k]])))),
+    Section('5','sparkle','Aktivitas',
+      h('input',{className:'field',value:act,placeholder:'mis. Sandboarding & naik jeep',onChange:e=>setAct(e.target.value)})),
+    Section('6','bag','Perlu dibawa',h('div',null,[
+      h('div',{key:'note',className:'b-xs muted',style:{marginBottom:10}},'Barang ini muncul otomatis di tab Persiapan.'),
+      ...prep.map(p=>h('div',{key:p.id,className:'row gap8',style:{marginBottom:8}},[
+        h('span',{key:'d',style:{width:6,height:6,borderRadius:6,background:C.clay,flexShrink:0}}),
+        h('span',{key:'t',className:'grow',style:{fontSize:14}},p.text),
+        h('button',{key:'x',className:'iconbtn-sm',onClick:()=>setPrep(prep.filter(x=>x.id!==p.id))},h(Icon,{name:'close',size:14,color:'var(--inkSoft)'})),
+      ])),
+      h('div',{key:'add',className:'row gap8',style:{marginTop:2}},[
+        h('input',{key:'i',className:'field grow',value:pTxt,placeholder:'Tambah barang…',onChange:e=>setPTxt(e.target.value),onKeyDown:e=>{if(e.key==='Enter')addPrepLocal();}}),
+        h('button',{key:'b',className:'btn',style:{background:C.clay,color:'#fff',padding:'0 14px'},onClick:addPrepLocal},h(Icon,{name:'plus',size:18,color:'#fff'})),
+      ]),
+    ])),
+    Section('7','wallet','Estimasi biaya (per kategori)',h('div',null,[
+      h('div',{key:'note',className:'b-xs',style:{marginBottom:10,color:C.teal,lineHeight:1.5}},'Kategori = kategori Anggaran. Aktual dibandingkan per kategori → under/over.'),
+      ...estItems.map(line=>h('div',{key:line.id,className:'row gap8',style:{marginBottom:9,alignItems:'center'}},[
+        h('select',{key:'c',className:'field',style:{flex:'1.1',minWidth:0},value:line.categoryId,onChange:e=>setLine(line.id,{categoryId:e.target.value})},expenseCats.map(c=>h('option',{key:c.id,value:c.id},c.name))),
+        h('div',{key:'m',style:{flex:1,minWidth:0}},h(MoneyInput,{value:line.amount,onChange:v=>setLine(line.id,{amount:v})})),
+        h('button',{key:'x',className:'iconbtn-sm',onClick:()=>rmLine(line.id)},h(Icon,{name:'close',size:16,color:'var(--inkSoft)'})),
+      ])),
+      h('div',{key:'act',className:'row gap8',style:{marginTop:2,marginBottom:showNewCat?10:0}},[
+        h('button',{key:'a',className:'btn btn-ghost grow',style:{padding:'8px'},onClick:addLine},[h(Icon,{name:'plus',size:15}),'Kategori']),
+        h('button',{key:'b',className:'btn btn-ghost grow',style:{padding:'8px'},onClick:()=>setShowNewCat(v=>!v)},[h(Icon,{name:'bag',size:15}),'Kategori baru']),
+      ]),
+      showNewCat?h('div',{key:'nc',className:'row gap8'},[
+        h('input',{key:'i',className:'field grow',value:newCatName,placeholder:'mis. Penginapan',onChange:e=>setNewCatName(e.target.value),onKeyDown:e=>{if(e.key==='Enter')createCat();}}),
+        h('button',{key:'b',className:'btn btn-teal',style:{padding:'0 14px'},onClick:createCat},'Simpan'),
+      ]):null,
+      h('div',{key:'tot',className:'between',style:{marginTop:12,paddingTop:10,borderTop:'1px solid var(--line)'}},[
+        h('span',{key:'a',style:{fontWeight:700,fontSize:13.5,color:'var(--inkSoft)'}},'Subtotal agenda'),
+        h('span',{key:'b',style:{fontWeight:800,fontSize:15,color:C.goldDark}},rupiah(estTotal)),
+      ]),
+      h('div',{key:'sync',className:'b-xs',style:{marginTop:8,color:C.teal}},'↗ Total estimasi trip diteruskan ke Matrix.'),
+    ])),
+    h('button',{key:'save',className:'btn',style:{width:'100%',padding:14,marginTop:2,background:C.clay,color:'#fff'},onClick:save},edit?'Simpan Agenda':'Tambah Agenda'),
   ]);
 }
 

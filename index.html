@@ -730,7 +730,12 @@ const toTimeInput=t=>t?`${String(t.h).padStart(2,'0')}:${String(t.m).padStart(2,
 const fmtDurMin=min=>{ if(!min)return''; const hh=Math.floor(min/60),mm=min%60; return `${hh?hh+' jam':''}${mm?(hh?' ':'')+mm+' mnt':''}`.trim(); };
 const addMinTime=(t,min)=>{ if(!t)return null; let tot=t.h*60+t.m+min; tot=((tot%1440)+1440)%1440; return {h:Math.floor(tot/60),m:tot%60}; };
 const diffMinTime=(a,b)=>{ if(!a||!b)return 0; let d=(b.h*60+b.m)-(a.h*60+a.m); if(d<0)d+=1440; return d; };
-const asDate=x=> (x instanceof Date)? x : (x?new Date(x):x);
+const asDate=x=>{
+  if(x instanceof Date) return x;
+  if(x && typeof x.toDate==='function') return x.toDate();            // Firestore Timestamp
+  if(x && typeof x==='object' && typeof x.seconds==='number') return new Date(x.seconds*1000); // Timestamp mentah
+  return x ? new Date(x) : x;
+};
 const segEst=sg=>(sg.estItems||[]).reduce((a,e)=>a+(e.amount||0),0);
 const tripEst=t=>(t.segments||[]).reduce((a,sg)=>a+segEst(sg),0);
 
@@ -741,6 +746,145 @@ const tripEst=t=>(t.segments||[]).reduce((a,sg)=>a+segEst(sg),0);
 const FIN_TODAY = new Date();
 const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.getDate());
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
+
+/* ---------------- Versi & catatan perubahan ---------------- */
+const APP_VERSION='1.09';
+const CHANGELOG=[
+  {v:'1.09', date:'10 Agu 2026', items:[
+    'Perbaikan: tanggal agenda Travel yang sempat tampil "undefined" kini benar.',
+    'Notifikasi berfungsi — izin perangkat + pengingat acara & jatuh tempo.',
+    'Lokasi & foto sampul beranda bisa diganti sendiri.',
+    'Ekspor Rencana ke PDF / JPG, dan Rencana + Persiapan ke Excel.',
+    'Halaman Catatan Perubahan (yang sedang kamu baca).',
+  ]},
+  {v:'1.08', date:'Agu 2026', items:[
+    'Modul Traveling: Persiapan (checklist) + Rencana (agenda per hari).',
+    'Biaya aktual per trip lewat penandaan transaksi Travel.',
+    'Agenda otomatis tampil di Kalender; estimasi masuk Matrix.',
+  ]},
+  {v:'1.07', date:'Agu 2026', items:[
+    'Integrasi Firebase — sinkron real-time dua perangkat.',
+    'Ubah kata sandi & export data (JSON) di Setting.',
+  ]},
+  {v:'1.06', date:'Jul 2026', items:[
+    'AI Asisten: tanya ringkasan keuangan & jadwal secara offline.',
+  ]},
+  {v:'1.05', date:'Jul 2026', items:[
+    'Kebersamaan: Jurnal Keluarga, Berdua/Refleksi, Kartu Percakapan.',
+  ]},
+  {v:'1.04', date:'Jul 2026', items:[
+    'Kalender, Perawatan, dan Pengingat; item berbiaya otomatis ke Matrix.',
+  ]},
+  {v:'1.03', date:'Jun 2026', items:[
+    'Matrix Eisenhower + Riwayat Plan; periode berbasis tanggal gajian.',
+  ]},
+  {v:'1.02', date:'Jun 2026', items:[
+    'Pilar Keuangan: Anggaran, Laporan, dan Goal menabung.',
+  ]},
+  {v:'1.01', date:'Jun 2026', items:[
+    'Fondasi & identitas: tema terang/gelap, akun keluarga.',
+  ]},
+];
+
+/* ---------------- Notifikasi (browser / PWA) ---------------- */
+function rkNotifSupported(){ return typeof window!=='undefined' && 'Notification' in window; }
+function rkNotifPermission(){ return rkNotifSupported() ? Notification.permission : 'unsupported'; }
+async function rkNotifRequest(){
+  if(!rkNotifSupported()) return 'unsupported';
+  try{ return await Notification.requestPermission(); }catch(e){ return Notification.permission; }
+}
+function rkNotifShow(title,body){
+  if(!rkNotifSupported() || Notification.permission!=='granted') return false;
+  try{
+    if(navigator.serviceWorker && navigator.serviceWorker.ready){
+      navigator.serviceWorker.ready.then(function(reg){
+        try{ reg.showNotification(title,{body:body,icon:LOGO_SRC,badge:LOGO_SRC,tag:'rk-'+title}); }
+        catch(e){ try{ new Notification(title,{body:body,icon:LOGO_SRC}); }catch(_){} }
+      }).catch(function(){ try{ new Notification(title,{body:body,icon:LOGO_SRC}); }catch(_){} });
+    } else { new Notification(title,{body:body,icon:LOGO_SRC}); }
+    return true;
+  }catch(e){ return false; }
+}
+// Pindai pengingat jatuh tempo & tampilkan notifikasi (sekali per item per hari).
+function rkNotifScan(s){
+  try{
+    var notif=(s.settings&&s.settings.notif)||{};
+    if(!notif.enabled) return;
+    if(!rkNotifSupported() || Notification.permission!=='granted') return;
+    var rem=buildReminders(s.events,s.maintenance,FIN_TODAY,7);
+    var firedKey='rk_notif_fired_'+dateKey(todayD);
+    var fired={}; try{ fired=JSON.parse(window.localStorage.getItem(firedKey)||'{}'); }catch(e){ fired={}; }
+    var shown=0;
+    rem.forEach(function(r){
+      if(r.source==='acara' && notif.events===false) return;
+      if(r.source==='maintenance' && notif.maintenance===false) return;
+      if(r.selisih>1) return;                 // hanya H-1, hari-H, atau terlewat
+      var id=r.source+':'+r.srcId;
+      if(fired[id]) return;
+      var when = r.selisih<0?'terlewat' : (r.selisih===0?'hari ini':'besok');
+      var body = r.judul+' — '+when+(r.nominal>0?(' · '+rupiah(r.nominal)):'');
+      if(rkNotifShow(r.source==='acara'?'Pengingat acara':'Jatuh tempo', body)){ fired[id]=1; shown++; }
+    });
+    if(shown){ try{ window.localStorage.setItem(firedKey,JSON.stringify(fired)); }catch(e){} }
+  }catch(e){}
+}
+
+/* ---------------- Sampul beranda: foto (device-local) + cuaca/lokasi ---------------- */
+var RK_COVER_KEY='rk_cover_v1';
+function rkGetCover(){ try{ return window.localStorage.getItem(RK_COVER_KEY)||''; }catch(e){ return ''; } }
+function rkSetCover(dataUrl){ try{ if(dataUrl) window.localStorage.setItem(RK_COVER_KEY,dataUrl); else window.localStorage.removeItem(RK_COVER_KEY); }catch(e){} }
+// Baca file gambar -> kecilkan -> JPEG data URL (ringan, tak membebani Firestore; disimpan lokal saja).
+function rkFileToCover(file,maxW){
+  return new Promise(function(resolve,reject){
+    maxW=maxW||1000;
+    var fr=new FileReader();
+    fr.onload=function(){
+      var img=new Image();
+      img.onload=function(){
+        try{
+          var scale=Math.min(1,maxW/img.width);
+          var w=Math.round(img.width*scale), hh=Math.round(img.height*scale);
+          var cv=document.createElement('canvas'); cv.width=w; cv.height=hh;
+          cv.getContext('2d').drawImage(img,0,0,w,hh);
+          resolve(cv.toDataURL('image/jpeg',0.82));
+        }catch(e){ reject(e); }
+      };
+      img.onerror=reject; img.src=fr.result;
+    };
+    fr.onerror=reject; fr.readAsDataURL(file);
+  });
+}
+// Cuaca + nama lokasi via geolokasi (Open-Meteo + reverse geocode). Cache 30 menit.
+var RK_WX_KEY='rk_wx_v1';
+var WX_ICON={0:'sun',1:'sun',2:'cloud',3:'cloud',45:'cloud',48:'cloud',51:'rain',53:'rain',55:'rain',61:'rain',63:'rain',65:'rain',80:'rain',81:'rain',82:'rain',95:'rain',96:'rain',99:'rain'};
+function rkWxCached(){ try{ var v=JSON.parse(window.localStorage.getItem(RK_WX_KEY)||'null'); if(v&&(Date.now()-v.ts)<30*60*1000) return v; }catch(e){} return null; }
+function rkFetchWeather(force){
+  return new Promise(function(resolve){
+    if(!force){ var cached=rkWxCached(); if(cached){ resolve(cached); return; } }
+    if(!navigator.geolocation){ resolve(null); return; }
+    function go(){
+      navigator.geolocation.getCurrentPosition(function(pos){
+        var lat=pos.coords.latitude, lng=pos.coords.longitude;
+        var out={ts:Date.now(),lat:lat,lng:lng,temp:null,code:0,place:''};
+        var wx=fetch('https://api.open-meteo.com/v1/forecast?latitude='+lat+'&longitude='+lng+'&current=temperature_2m,weather_code')
+          .then(function(r){return r.json();})
+          .then(function(j){ if(j&&j.current){ out.temp=Math.round(j.current.temperature_2m); out.code=j.current.weather_code; } })
+          .catch(function(){});
+        var geo=fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+lat+'&longitude='+lng+'&localityLanguage=id')
+          .then(function(r){return r.json();})
+          .then(function(j){ if(j){ out.place=[j.locality||j.city, j.principalSubdivision].filter(Boolean).join(', '); } })
+          .catch(function(){});
+        Promise.all([wx,geo]).then(function(){ try{ window.localStorage.setItem(RK_WX_KEY,JSON.stringify(out)); }catch(e){} resolve(out); });
+      }, function(){ resolve(null); }, {timeout:8000,maximumAge:30*60*1000});
+    }
+    if(force){ go(); return; }
+    // Tanpa 'force' (auto saat beranda dibuka): JANGAN memicu prompt izin.
+    // Hanya lanjut bila izin lokasi memang sudah diberikan sebelumnya.
+    if(navigator.permissions && navigator.permissions.query){
+      navigator.permissions.query({name:'geolocation'}).then(function(st){ if(st.state==='granted') go(); else resolve(null); }).catch(function(){ resolve(null); });
+    } else { resolve(null); }
+  });
+}
 
 /* ---------------- Akun ---------------- */
 const ACCOUNTS=[
@@ -1162,7 +1306,9 @@ function rkDefaultState(){
     // traveling
     trips:seedTrips(),
     // pengaturan
-    settings:{paydayDefault:28,periodOverrides:{}},
+    settings:{paydayDefault:28,periodOverrides:{},
+      notif:{enabled:false,events:true,maintenance:true},
+      homeLocation:''},
   };
 }
 // String tanggal ISO (hasil JSON.stringify sebuah Date) → deteksi utk dihidupkan.
@@ -1194,27 +1340,35 @@ var RK_COLLECTIONS=['categories','transactions','matrixItems','goals',
 // Field berttipe tanggal per record (untuk konversi Timestamp <-> Date).
 var RK_DATE_FIELDS=['date','last','start','end','deadline'];
 
-// Timestamp Firestore -> Date JS (rekursif, aman utk nested).
+// Timestamp Firestore -> Date JS (REKURSIF PENUH: menembus array & objek nested,
+// mis. trips.segments[].date. Versi lama hanya mengonversi field level-atas, sehingga
+// tanggal agenda Travel kembali sebagai Timestamp -> asDate() -> Invalid Date ->
+// header "undefined, NaN undefined". Rekursi penuh menuntaskannya.)
 function rkTsToDate(v){
   if(v==null) return v;
-  if(typeof v==='object' && typeof v.toDate==='function') return v.toDate();
+  if(v instanceof Date) return v;
+  if(typeof v==='object' && typeof v.toDate==='function') return v.toDate(); // Firestore Timestamp
+  if(Array.isArray(v)){ var arr=[]; for(var i=0;i<v.length;i++) arr.push(rkTsToDate(v[i])); return arr; }
+  if(typeof v==='object'){ var o={}; for(var k in v){ if(Object.prototype.hasOwnProperty.call(v,k)) o[k]=rkTsToDate(v[k]); } return o; }
   return v;
 }
 function rkDocToObj(id,data){
-  var o={...data,id:id};
-  for(var i=0;i<RK_DATE_FIELDS.length;i++){
-    var f=RK_DATE_FIELDS[i];
-    if(o[f]!=null) o[f]=rkTsToDate(o[f]);
-  }
+  var o=rkTsToDate(data)||{};
+  o.id=id;
   return o;
+}
+// Date JS -> Timestamp Firestore (rekursif penuh, simetris dgn rkTsToDate).
+function rkDateToTs(FB,v){
+  if(v==null) return v;
+  if(v instanceof Date) return FB.Timestamp.fromDate(v);
+  if(typeof v==='object' && typeof v.toDate==='function') return v; // sudah Timestamp
+  if(Array.isArray(v)){ var arr=[]; for(var i=0;i<v.length;i++) arr.push(rkDateToTs(FB,v[i])); return arr; }
+  if(typeof v==='object'){ var o={}; for(var k in v){ if(Object.prototype.hasOwnProperty.call(v,k)) o[k]=rkDateToTs(FB,v[k]); } return o; }
+  return v;
 }
 // Date JS -> Timestamp Firestore (untuk seeding/tulis).
 function rkObjToDoc(FB,obj){
-  var o={...obj};
-  for(var i=0;i<RK_DATE_FIELDS.length;i++){
-    var f=RK_DATE_FIELDS[i];
-    if(o[f] instanceof Date) o[f]=FB.Timestamp.fromDate(o[f]);
-  }
+  var o=rkDateToTs(FB,obj)||{};
   delete o.id; // id disimpan sebagai id dokumen, bukan field
   return o;
 }
@@ -1502,6 +1656,8 @@ function useStore(){
               matrixItems:t&&t.matrixId?s.matrixItems.filter(m=>m.id!==t.matrixId):s.matrixItems}; }),
     setPayday:d=>up(s=>{ const ns={...s.settings,paydayDefault:d}; rkWriteSettings(ns);
       return {settings:ns}; }),
+    patchSettings:patch=>up(s=>{ const ns={...s.settings,...patch}; rkWriteSettings(ns);
+      return {settings:ns}; }),
     setPeriodOverride:(key,start,end)=>up(s=>{ const ns={...s.settings,periodOverrides:{...(s.settings.periodOverrides||{}),[key]:{start,end}}}; rkWriteSettings(ns);
       return {settings:ns}; }),
     clearPeriodOverride:key=>up(s=>{ const o={...(s.settings.periodOverrides||{})}; delete o[key]; const ns={...s.settings,periodOverrides:o}; rkWriteSettings(ns);
@@ -1692,6 +1848,7 @@ function Shell({store,account,theme,setTheme,onLogout}){
   else if(overlay==='together') body=h(TogetherScreen,{ctx});
   else if(overlay==='ai') body=h(AssistantScreen,{ctx});
   else if(overlay==='trip') body=h(TripScreen,{ctx});
+  else if(overlay==='changelog') body=h(ChangelogScreen,{ctx});
   else body=[
     h(HomeScreen,{ctx}), h(BudgetScreen,{ctx}), h(ScheduleScreen,{ctx}),
     h(MatrixScreen,{ctx}), h(SettingScreen,{ctx}),
@@ -1748,6 +1905,7 @@ function SheetRouter({sheet,ctx}){
     journal:JournalSheet, reflection:ReflectionSheet, conversation:ConversationSheet,
     goal:GoalSheet, trip:TripSheet, segment:SegmentSheet, periodEditor:PeriodEditorSheet,
     budgetEdit:BudgetEditSheet, paydayEdit:PaydayEditSheet, changePw:ChangePwSheet,
+    tripExport:TripExportSheet, notif:NotifSheet, cover:CoverSheet,
   };
   const Comp=map[type];
   return h(Sheet,{open:true,onClose:ctx.closeSheet}, Comp?h(Comp,{ctx,...props}):null);
@@ -1779,6 +1937,12 @@ function HomeScreen({ctx}){
   const budget=s.monthlyBudget[periodKey(year,month)]??DEFAULT_BUDGET;
   const perLabel=calc.periodLabel(year,month);
 
+  const [cover,setCover]=useState(rkGetCover());
+  const [wx,setWx]=useState(rkWxCached());
+  useEffect(()=>{ const on=()=>setCover(rkGetCover()); window.addEventListener('rk-cover-updated',on); return ()=>window.removeEventListener('rk-cover-updated',on); },[]);
+  useEffect(()=>{ let alive=true; rkFetchWeather().then(w=>{ if(alive&&w) setWx(w); }); return ()=>{alive=false;}; },[]);
+  useEffect(()=>{ rkNotifScan(s); },[s.events,s.maintenance,s.settings]);  // pindai pengingat saat beranda dibuka
+
   const reminderCount=buildReminders(s.events,s.maintenance,FIN_TODAY).length;
 
   const hour=FIN_TODAY.getHours();
@@ -1806,6 +1970,8 @@ function HomeScreen({ctx}){
   const saldo=pemasukan-pengeluaran;
   const kumulatif=calc.kumulatif();
   const recent=[...s.transactions].filter(t=>!t.tripId).sort((a,b)=>b.date-a.date).slice(0,3);
+  const homeLoc = (s.settings&&s.settings.homeLocation) || (wx&&wx.place) || 'Atur lokasi';
+  const temp = (wx&&wx.temp!=null) ? (wx.temp+'°C') : null;
 
   return h('div',{style:{padding:'14px 18px 100px'},className:'fadein'},[
     // header
@@ -1829,12 +1995,13 @@ function HomeScreen({ctx}){
     ]),
     // weather card
     h('div',{key:'w',style:{height:130,borderRadius:22,marginBottom:16,position:'relative',overflow:'hidden',
-      background:`linear-gradient(135deg,${C.teal},${C.sage})`}},[
-      h('div',{key:'loc',style:{position:'absolute',left:16,bottom:14,color:'#fff',display:'flex',alignItems:'center',gap:4,fontWeight:600,fontSize:12}},
-        [h(Icon,{key:'i',name:'location',size:15,color:'rgba(255,255,255,.8)'}),'Jaten, Jawa Tengah']),
-      h('div',{key:'tp',style:{position:'absolute',right:16,top:14,color:'#fff',display:'flex',alignItems:'center',gap:6}},
-        [h(Icon,{key:'i',name:'sun',size:18,color:'#fff'}),h('span',{key:'t',style:{fontWeight:800,fontSize:16}},'32°C')]),
-      h('button',{key:'c',style:{position:'absolute',right:12,bottom:12,background:'rgba(255,255,255,.24)',color:'#fff',borderRadius:10,padding:'6px 12px',fontSize:12,display:'flex',alignItems:'center',gap:6,fontWeight:600}},
+      ...(cover?{backgroundImage:`url(${cover})`,backgroundSize:'cover',backgroundPosition:'center'}:{background:`linear-gradient(135deg,${C.teal},${C.sage})`})}},[
+      cover?h('div',{key:'ov',style:{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,.05),rgba(0,0,0,.38))'}}):null,
+      h('div',{key:'loc',onClick:()=>openSheet('cover'),style:{position:'absolute',left:16,bottom:14,color:'#fff',display:'flex',alignItems:'center',gap:4,fontWeight:600,fontSize:12,textShadow:'0 1px 3px rgba(0,0,0,.35)',cursor:'pointer'}},
+        [h(Icon,{key:'i',name:'location',size:15,color:'rgba(255,255,255,.9)'}), homeLoc]),
+      temp?h('div',{key:'tp',style:{position:'absolute',right:16,top:14,color:'#fff',display:'flex',alignItems:'center',gap:6,textShadow:'0 1px 3px rgba(0,0,0,.35)'}},
+        [h(Icon,{key:'i',name:'sun',size:18,color:'#fff'}),h('span',{key:'t',style:{fontWeight:800,fontSize:16}},temp)]):null,
+      h('button',{key:'c',onClick:()=>openSheet('cover'),style:{position:'absolute',right:12,bottom:12,background:'rgba(255,255,255,.24)',color:'#fff',borderRadius:10,padding:'6px 12px',fontSize:12,display:'flex',alignItems:'center',gap:6,fontWeight:600,border:'none',cursor:'pointer'}},
         [h(Icon,{key:'i',name:'camera',size:15,color:'#fff'}),'Ganti foto']),
     ]),
     // quick grid
@@ -3161,6 +3328,134 @@ function SettingGroup({title,children}){
     h('div',{key:'c',className:'setgroup'},children),
   ]);
 }
+
+/* ---- Toggle kecil (reusable) ---- */
+function Toggle({on,onClick}){
+  return h('button',{onClick,'aria-pressed':on?'true':'false',
+    style:{width:44,height:26,borderRadius:13,background:on?C.teal:'var(--line)',position:'relative',transition:'.2s',flexShrink:0,border:'none',cursor:'pointer',padding:0}},
+    h('span',{style:{position:'absolute',top:3,left:on?21:3,width:20,height:20,borderRadius:'50%',background:'#fff',transition:'.2s',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}));
+}
+
+/* ---- Catatan Perubahan (Log update) ---- */
+function ChangelogScreen({ctx}){
+  const {setOverlay}=ctx;
+  return h('div',{style:{paddingBottom:40},className:'fadein'},[
+    h(OverlayHeader,{key:'h',title:'Catatan Perubahan',onBack:()=>setOverlay(null)}),
+    h('div',{key:'bd',style:{padding:'8px 18px 0'}},[
+      h('div',{key:'top',className:'row gap12',style:{marginBottom:16,alignItems:'center'}},[
+        h(BrandMark,{key:'b'}),
+        h('div',{key:'t'},[
+          h('div',{key:'1',style:{fontWeight:800,fontSize:16}},'RumahKita'),
+          h('div',{key:'2',className:'b-sm muted'},'Versi '+APP_VERSION+' · Web'),
+        ]),
+      ]),
+      ...CHANGELOG.map((c,i)=>h(Card,{key:c.v,style:{marginBottom:12}},[
+        h('div',{key:'hd',className:'row gap8',style:{marginBottom:8,alignItems:'center'}},[
+          h('span',{key:'v',className:'chip',style:{background:(i===0?C.gold:C.teal)+'1f',color:i===0?C.goldDark:C.teal,fontWeight:800}},'v'+c.v),
+          i===0?h('span',{key:'n',className:'chip',style:{background:C.income+'1a',color:C.income,fontWeight:700}},'Terbaru'):null,
+          h('span',{key:'d',className:'b-xs muted',style:{marginLeft:'auto',fontWeight:600}},c.date),
+        ]),
+        ...c.items.map((it,j)=>h('div',{key:j,className:'row gap8',style:{marginBottom:6,alignItems:'flex-start'}},[
+          h('span',{key:'dot',style:{width:6,height:6,borderRadius:6,background:i===0?C.gold:'var(--inkSoft)',marginTop:6,flexShrink:0}}),
+          h('span',{key:'t',className:'b-sm',style:{lineHeight:1.5}},it),
+        ])),
+      ])),
+    ]),
+  ]);
+}
+
+/* ---- Pengaturan notifikasi (berfungsi) ---- */
+function NotifSheet({ctx}){
+  const {store}=ctx; const s=store.state;
+  const notif=(s.settings&&s.settings.notif)||{enabled:false,events:true,maintenance:true};
+  const [perm,setPerm]=useState(rkNotifPermission());
+  const supported=rkNotifSupported();
+  const enable=async()=>{
+    if(!supported){ toast('Perangkat/browser ini tak mendukung notifikasi'); return; }
+    if(notif.enabled){ store.patchSettings({notif:{...notif,enabled:false}}); toast('Notifikasi dimatikan'); return; }
+    const p=await rkNotifRequest(); setPerm(p);
+    if(p==='granted'){ store.patchSettings({notif:{...notif,enabled:true}}); toast('Notifikasi aktif ✓');
+      rkNotifScan({...s,settings:{...s.settings,notif:{...notif,enabled:true}}}); }
+    else if(p==='denied'){ toast('Izin ditolak — aktifkan lewat setelan browser'); }
+    else { toast('Izin belum diberikan'); }
+  };
+  const setSub=(key,val)=>store.patchSettings({notif:{...notif,[key]:val}});
+  const rowSwitch=(k,title,sub,on,onClick,disabled)=>h('div',{key:k,className:'setrow',style:{opacity:disabled?0.5:1}},[
+    h('div',{key:'g',className:'grow',style:{textAlign:'left'}},[
+      h('div',{key:'t',style:{fontWeight:600,fontSize:14.5}},title),
+      sub?h('div',{key:'s',className:'b-sm muted',style:{marginTop:1}},sub):null,
+    ]),
+    h(Toggle,{key:'sw',on,onClick:disabled?()=>{}:onClick}),
+  ]);
+  return h('div',null,[
+    h(SheetHeader,{key:'h',title:'Notifikasi'}),
+    h('div',{key:'st',className:'b-sm',style:{marginBottom:14,lineHeight:1.5,color:perm==='denied'?C.expense:'var(--inkSoft)'}},
+      !supported?'Browser ini tidak mendukung notifikasi.'
+      :perm==='granted'?'Izin diberikan. Pengingat akan muncul saat aplikasi dibuka.'
+      :perm==='denied'?'Izin notifikasi diblokir. Buka setelan situs di browser untuk mengizinkan.'
+      :'Aktifkan untuk mengizinkan RumahKita menampilkan pengingat.'),
+    h('div',{key:'g',className:'setgroup',style:{marginBottom:14}},[
+      rowSwitch('r0','Aktifkan notifikasi', perm==='granted'?'Izin perangkat sudah diberikan':'Minta izin perangkat', !!notif.enabled, enable, !supported),
+      h('div',{key:'d1',className:'setdiv'}),
+      rowSwitch('r1','Pengingat acara','Acara ≤ 7 hari ke depan', notif.events!==false, ()=>setSub('events',!(notif.events!==false)), !notif.enabled),
+      h('div',{key:'d2',className:'setdiv'}),
+      rowSwitch('r2','Jatuh tempo','Perawatan & tagihan yang jatuh tempo', notif.maintenance!==false, ()=>setSub('maintenance',!(notif.maintenance!==false)), !notif.enabled),
+    ]),
+    h('button',{key:'test',className:'btn btn-teal',style:{width:'100%',padding:12},onClick:()=>{
+      if(!supported){ toast('Tidak didukung'); return; }
+      if(Notification.permission!=='granted'){ toast('Aktifkan notifikasi dulu'); return; }
+      rkNotifShow('RumahKita','Notifikasi berhasil ✓ — beginilah pengingatmu nanti.'); }},
+      [h(Icon,{name:'bell',size:16,color:'#fff'}),'Kirim notifikasi uji']),
+    h('div',{key:'note',className:'b-xs muted',style:{marginTop:12,lineHeight:1.5}},
+      'Catatan: sebagai aplikasi web, pengingat dipindai saat kamu membuka RumahKita. Notifikasi latar-belakang penuh memerlukan server push (menyusul).'),
+  ]);
+}
+
+/* ---- Ganti sampul beranda: foto + lokasi ---- */
+function CoverSheet({ctx}){
+  const {store}=ctx; const s=store.state;
+  const [cover,setCover]=useState(rkGetCover());
+  const [loc,setLoc]=useState(s.settings.homeLocation||'');
+  const [busy,setBusy]=useState(false);
+  const fileRef=useRef(null);
+  const pick=()=>{ if(fileRef.current) fileRef.current.click(); };
+  const onFile=async(e)=>{
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    setBusy(true);
+    try{ const url=await rkFileToCover(f,1000); rkSetCover(url); setCover(url); toast('Foto sampul diperbarui'); }
+    catch(err){ toast('Gagal memuat foto'); }
+    setBusy(false); e.target.value='';
+  };
+  const removePhoto=()=>{ rkSetCover(''); setCover(''); toast('Foto sampul dihapus'); };
+  const useMyLoc=async()=>{
+    setBusy(true);
+    const wx=await rkFetchWeather(true);
+    setBusy(false);
+    if(wx&&wx.place){ setLoc(wx.place); toast('Lokasi terdeteksi'); }
+    else toast('Tidak bisa mendeteksi lokasi');
+  };
+  const save=()=>{ store.patchSettings({homeLocation:loc.trim()}); try{window.dispatchEvent(new Event('rk-cover-updated'));}catch(e){} toast('Tersimpan'); ctx.closeSheet(); };
+  const previewBg=cover?{backgroundImage:`url(${cover})`,backgroundSize:'cover',backgroundPosition:'center'}:{background:`linear-gradient(135deg,${C.teal},${C.sage})`};
+  return h('div',null,[
+    h(SheetHeader,{key:'h',title:'Sampul beranda'}),
+    h('div',{key:'pv',style:{height:120,borderRadius:18,marginBottom:14,overflow:'hidden',position:'relative',...previewBg}},[
+      h('div',{key:'ov',style:{position:'absolute',inset:0,background:cover?'rgba(0,0,0,.18)':'transparent'}}),
+      h('div',{key:'l',style:{position:'absolute',left:14,bottom:12,color:'#fff',fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5}},
+        [h(Icon,{key:'i',name:'location',size:14,color:'#fff'}),loc||'Lokasi belum diatur']),
+    ]),
+    h('input',{key:'file',ref:fileRef,type:'file',accept:'image/*',style:{display:'none'},onChange:onFile}),
+    h('div',{key:'ph',className:'row gap8',style:{marginBottom:16}},[
+      h('button',{key:'a',className:'btn btn-teal grow',style:{padding:12},onClick:pick,disabled:busy},[h(Icon,{name:'camera',size:16,color:'#fff'}),busy?'Memproses…':(cover?'Ganti foto':'Pilih foto')]),
+      cover?h('button',{key:'b',className:'btn btn-ghost',style:{padding:'12px 14px'},onClick:removePhoto},h(Icon,{name:'trash',size:16,color:C.maroon})):null,
+    ]),
+    h('label',{key:'ll',className:'label'},'Lokasi (tampil di beranda)'),
+    h('input',{key:'li',className:'field',value:loc,placeholder:'mis. Jaten, Jawa Tengah',onChange:e=>setLoc(e.target.value)}),
+    h('button',{key:'geo',className:'btn btn-ghost',style:{width:'100%',padding:11,marginTop:10},onClick:useMyLoc,disabled:busy},[h(Icon,{name:'location',size:16}),'Gunakan lokasi saya']),
+    h('div',{key:'note',className:'b-xs muted',style:{marginTop:12,lineHeight:1.5}},'Foto disimpan di perangkat ini saja (tak ikut tersinkron). Lokasi tersinkron ke keluarga.'),
+    h('button',{key:'save',className:'btn btn-gold',style:{width:'100%',padding:14,marginTop:14},onClick:save},'Simpan'),
+  ]);
+}
+
 function SettingScreen({ctx}){
   const {account,theme,setTheme,onLogout,store}=ctx;
   const partner=account.key==='azwar'?accountByKey('dewi'):accountByKey('azwar');
@@ -3191,7 +3486,7 @@ function SettingScreen({ctx}){
     h(SettingGroup,{key:'pref',title:'PREFERENSI'},[
       h(SettingRow,{key:'th',icon:theme==='light'?'moon':'sun',color:C.gold,title:'Mode Gelap',sub:theme==='dark'?'Aktif':'Nonaktif',onClick:()=>setTheme(theme==='light'?'dark':'light'),right:themeSwitch}),
       h('div',{key:'d1',className:'setdiv'}),
-      h(SettingRow,{key:'no',icon:'bell',color:C.clay,title:'Notifikasi',sub:'Pengingat acara & jatuh tempo',onClick:()=>toast('Pengaturan notifikasi menyusul')}),
+      h(SettingRow,{key:'no',icon:'bell',color:C.clay,title:'Notifikasi',sub:'Pengingat acara & jatuh tempo',onClick:()=>ctx.openSheet('notif')}),
       h('div',{key:'d2',className:'setdiv'}),
       h(SettingRow,{key:'cur',icon:'wallet',color:C.income,title:'Mata Uang',sub:'Rupiah (IDR)',onClick:()=>toast('Rupiah (default)')}),
       h('div',{key:'d4',className:'setdiv'}),
@@ -3208,7 +3503,7 @@ function SettingScreen({ctx}){
 
     // Tentang
     h(SettingGroup,{key:'about',title:'TENTANG'},[
-      h(SettingRow,{key:'v',icon:'home',color:C.goldDark,title:'RumahKita',sub:'Anchor of Serenity',right:h('span',{className:'b-sm muted'},'v1.08 · Web')}),
+      h(SettingRow,{key:'v',icon:'home',color:C.goldDark,title:'RumahKita',sub:'Anchor of Serenity',onClick:()=>ctx.setOverlay('changelog'),right:h('span',{className:'row gap6',style:{alignItems:'center'}},[h('span',{key:'v',className:'b-sm muted'},'v'+APP_VERSION+' · Web'),h(Icon,{key:'c',name:'right',size:16,color:'var(--inkSoft)'})])}),
       h('div',{key:'d2',className:'setdiv'}),
       h(SettingRow,{key:'help',icon:'heart',color:C.maroon,title:'Bantuan & Masukan',onClick:()=>toast('Terima kasih 💛')}),
     ]),
@@ -3522,6 +3817,173 @@ function segTimeLabel(sg){
   return `${fmtTime(sg.startTime)}–${fmtTime(sg.endTime)} · ${fmtDurMin(diffMinTime(sg.startTime,sg.endTime))}`;
 }
 
+/* ============ EKSPOR TRAVEL (mandiri — tanpa pustaka/CDN) ============
+   Rencana -> SVG -> canvas -> JPG; JPG dibungkus ke PDF (DCTDecode).
+   Rencana + Persiapan -> SpreadsheetML XML (.xls, 2 sheet). */
+function xmlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function tripDaysGrouped(t){
+  var days={}; (t.segments||[]).forEach(function(sg){ var k=dateKey(asDate(sg.date)); (days[k]=days[k]||[]).push(sg); });
+  return Object.keys(days).sort().map(function(k){
+    var list=days[k].slice().sort(function(a,b){ return (a.startTime?a.startTime.h*60+a.startTime.m:0)-(b.startTime?b.startTime.h*60+b.startTime.m:0); });
+    return {key:k, date:asDate(list[0].date), segs:list};
+  });
+}
+function segEndLabel(sg){
+  if(!sg.startTime) return '';
+  if(sg.mode==='duration') return fmtDurMin(sg.durationMin);
+  return sg.endTime?('s/d '+fmtTime(sg.endTime)):'';
+}
+function slugTrip(t){ return (t.dest||'trip').replace(/[^\w\u00C0-\u024F]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'trip'; }
+function downloadBlobRK(blob,filename){
+  var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){ URL.revokeObjectURL(url); },1500);
+}
+function downloadDataUrlRK(dataUrl,filename){
+  var a=document.createElement('a'); a.href=dataUrl; a.download=filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+function buildPlanSVG(t){
+  var W=760, pad=28, y=0;
+  var teal=C.teal, gold=C.goldDark, ink='#3A342A', soft='#8A8172', line='#EAE1CE', clay=C.clay, cream='#FFFDF8', bg='#F6F1E7';
+  function T(x,ty,s,size,color,weight,anchor){
+    return '<text x="'+x+'" y="'+ty+'" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="'+size+'" fill="'+color+'"'+(weight?(' font-weight="'+weight+'"'):'')+(anchor?(' text-anchor="'+anchor+'"'):'')+'>'+xmlEsc(s)+'</text>';
+  }
+  function wrap(s,max){ s=String(s||''); var w=s.split(' '),ln=[],cur=''; for(var i=0;i<w.length;i++){ var tr=cur?cur+' '+w[i]:w[i]; if(tr.length>max&&cur){ln.push(cur);cur=w[i];}else cur=tr;} if(cur)ln.push(cur); return ln; }
+  var groups=tripDaysGrouped(t), estTotal=tripEst(t), headerH=118, body='';
+  y=headerH+8;
+  groups.forEach(function(g,gi){
+    var dlabel=HARI[g.date.getDay()]+', '+g.date.getDate()+' '+BULAN_SG[g.date.getMonth()]+' '+g.date.getFullYear();
+    var dayEst=g.segs.reduce(function(a,sg){return a+segEst(sg);},0);
+    body+='<circle cx="'+(pad+13)+'" cy="'+(y+9)+'" r="13" fill="'+teal+'"/>'+T(pad+13,y+14,String(gi+1),13,'#fff',700,'middle');
+    body+=T(pad+36,y+8,dlabel,15,ink,700)+T(W-pad,y+8,'Estimasi '+rupiah(dayEst),12.5,soft,700,'end');
+    y+=34;
+    g.segs.forEach(function(sg){
+      var via=sg.transport?TRANSPORT_LABEL[sg.transport]:'';
+      var actLines=wrap(sg.activity||'-',52);
+      var locLine=sg.location?('Lokasi: '+sg.location):''; var est=segEst(sg);
+      var innerLines=actLines.length+(locLine?1:0)+1+(est>0?1:0);
+      var cardH=18+innerLines*20+8;
+      body+='<rect x="'+pad+'" y="'+y+'" width="'+(W-pad*2)+'" height="'+cardH+'" rx="14" fill="'+cream+'" stroke="'+line+'"/>';
+      var tx=pad+16, ty=y+26;
+      var timeS=(sg.startTime?fmtTime(sg.startTime):'—')+(segEndLabel(sg)?('   '+segEndLabel(sg)):'');
+      body+=T(tx,ty,timeS+(via?('    ·   '+via):''),12.5,clay,700); ty+=22;
+      actLines.forEach(function(al){ body+=T(tx,ty,al,14.5,ink,700); ty+=20; });
+      if(locLine){ body+=T(tx,ty,locLine,12.5,soft,600); ty+=20; }
+      if(est>0){ body+=T(tx,ty,'Estimasi: '+rupiah(est),12.5,gold,700); ty+=20; }
+      y+=cardH+10;
+    });
+    y+=8;
+  });
+  var H=y+pad+6;
+  var svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">';
+  svg+='<rect width="'+W+'" height="'+H+'" fill="'+bg+'"/>';
+  svg+='<rect x="0" y="0" width="'+W+'" height="'+headerH+'" fill="'+teal+'"/>';
+  svg+=T(pad,50,'Rencana Perjalanan',22,'#fff',800);
+  svg+=T(pad,78,t.dest||'',16,'#E7EFEC',700);
+  svg+=T(pad,102,tanggal(t.start)+'  –  '+tanggal(t.end)+'   ·   '+tripDurasi(t.start,t.end)+' hari',12.5,'#CFE0DB',600);
+  svg+=T(W-pad,74,'Total estimasi',12,'#CFE0DB',600,'end')+T(W-pad,98,rupiah(estTotal),18,'#fff',800,'end');
+  svg+=body+T(pad,H-14,'RumahKita — Anchor of Serenity',11,soft,600)+'</svg>';
+  return {svg:svg,width:W,height:H};
+}
+function svgToJpeg(svgObj,scale){
+  scale=scale||2;
+  return new Promise(function(resolve,reject){
+    var img=new Image();
+    img.onload=function(){
+      try{
+        var cv=document.createElement('canvas'); cv.width=svgObj.width*scale; cv.height=svgObj.height*scale;
+        var ctx=cv.getContext('2d'); ctx.fillStyle='#F6F1E7'; ctx.fillRect(0,0,cv.width,cv.height);
+        ctx.drawImage(img,0,0,cv.width,cv.height);
+        resolve({dataUrl:cv.toDataURL('image/jpeg',0.92),w:cv.width,h:cv.height});
+      }catch(e){ reject(e); }
+    };
+    img.onerror=function(){ reject(new Error('svg load')); };
+    img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svgObj.svg);
+  });
+}
+function jpegToPdfBlob(jpegDataUrl,wPx,hPx){
+  var b64=jpegDataUrl.split(',')[1], bin=atob(b64), len=bin.length;
+  var pageW=595, pageH=Math.round(595*hPx/wPx);
+  var pdf='%PDF-1.3\n', offsets=[];
+  function addObj(str){ offsets.push(pdf.length); pdf+=str; }
+  addObj('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  addObj('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+  addObj('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 '+pageW+' '+pageH+'] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n');
+  offsets.push(pdf.length);
+  pdf+='4 0 obj\n<< /Type /XObject /Subtype /Image /Width '+wPx+' /Height '+hPx+' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length '+len+' >>\nstream\n';
+  pdf+=bin; pdf+='\nendstream\nendobj\n';
+  var content='q\n'+pageW+' 0 0 '+pageH+' 0 0 cm\n/Im0 Do\nQ\n';
+  addObj('5 0 obj\n<< /Length '+content.length+' >>\nstream\n'+content+'\nendstream\nendobj\n');
+  var xrefPos=pdf.length, n=6;
+  var xref='xref\n0 '+n+'\n0000000000 65535 f \n';
+  for(var i=0;i<offsets.length;i++){ xref+=('0000000000'+offsets[i]).slice(-10)+' 00000 n \n'; }
+  pdf+=xref+'trailer\n<< /Size '+n+' /Root 1 0 R >>\nstartxref\n'+xrefPos+'\n%%EOF';
+  var bytes=new Uint8Array(pdf.length);
+  for(var j=0;j<pdf.length;j++){ bytes[j]=pdf.charCodeAt(j)&0xff; }
+  return new Blob([bytes],{type:'application/pdf'});
+}
+function buildTripXls(t){
+  function cell(v){ return '<Cell><Data ss:Type="String">'+xmlEsc(v)+'</Data></Cell>'; }
+  function num(v){ return '<Cell><Data ss:Type="Number">'+(v||0)+'</Data></Cell>'; }
+  function hcell(v){ return '<Cell ss:StyleID="hdr"><Data ss:Type="String">'+xmlEsc(v)+'</Data></Cell>'; }
+  function row(cells){ return '<Row>'+cells.join('')+'</Row>'; }
+  var groups=tripDaysGrouped(t);
+  var rRows=[ row(['<Cell ss:StyleID="ttl" ss:MergeAcross="6"><Data ss:Type="String">'+xmlEsc('Rencana — '+(t.dest||'')+' ('+tanggal(t.start)+' – '+tanggal(t.end)+')')+'</Data></Cell>']),
+    row([hcell('Tanggal'),hcell('Mulai'),hcell('Selesai/Durasi'),hcell('Via'),hcell('Aktivitas'),hcell('Lokasi'),hcell('Estimasi (Rp)')]) ];
+  var grand=0;
+  groups.forEach(function(g){
+    var dlabel=HARI[g.date.getDay()]+', '+g.date.getDate()+' '+BULAN_SG[g.date.getMonth()]+' '+g.date.getFullYear();
+    g.segs.forEach(function(sg,i){ grand+=segEst(sg);
+      rRows.push(row([ cell(i===0?dlabel:''), cell(sg.startTime?fmtTime(sg.startTime):''), cell(segEndLabel(sg)),
+        cell(sg.transport?TRANSPORT_LABEL[sg.transport]:''), cell(sg.activity||''), cell(sg.location||''), num(segEst(sg)) ])); });
+  });
+  rRows.push(row([cell(''),cell(''),cell(''),cell(''),cell(''),hcell('TOTAL'),'<Cell ss:StyleID="hdr"><Data ss:Type="Number">'+grand+'</Data></Cell>']));
+  var pRows=[ row(['<Cell ss:StyleID="ttl" ss:MergeAcross="3"><Data ss:Type="String">'+xmlEsc('Persiapan — '+(t.dest||''))+'</Data></Cell>']),
+    row([hcell('Tanggal'),hcell('Agenda'),hcell('Barang bawaan'),hcell('Status')]) ];
+  var anyPrep=false;
+  groups.forEach(function(g){ var dlabel=g.date.getDate()+' '+BULAN_SG[g.date.getMonth()];
+    g.segs.forEach(function(sg){ (sg.prep||[]).forEach(function(p){ anyPrep=true;
+      pRows.push(row([ cell(dlabel), cell(sg.activity||''), cell(p.text||''), cell(p.done?'Sudah':'Belum') ])); }); }); });
+  if(!anyPrep) pRows.push(row([cell(''),cell(''),cell('(belum ada barang bawaan)'),cell('')]));
+  return '<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n'+
+    '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n'+
+    '<Styles>'+
+      '<Style ss:ID="hdr"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#3E6B63" ss:Pattern="Solid"/></Style>'+
+      '<Style ss:ID="ttl"><Font ss:Bold="1" ss:Size="13" ss:Color="#3E6B63"/></Style>'+
+    '</Styles>\n'+
+    '<Worksheet ss:Name="Rencana"><Table>'+rRows.join('')+'</Table></Worksheet>\n'+
+    '<Worksheet ss:Name="Persiapan"><Table>'+pRows.join('')+'</Table></Worksheet>\n'+
+    '</Workbook>';
+}
+function exportTripPlanImage(t,kind){
+  var svgObj; try{ svgObj=buildPlanSVG(t); }catch(e){ toast('Gagal menyiapkan rencana'); return; }
+  svgToJpeg(svgObj,2).then(function(res){
+    if(kind==='jpg'){ downloadDataUrlRK(res.dataUrl,'Rencana-'+slugTrip(t)+'.jpg'); toast('Rencana JPG diunduh 🖼'); }
+    else { downloadBlobRK(jpegToPdfBlob(res.dataUrl,res.w,res.h),'Rencana-'+slugTrip(t)+'.pdf'); toast('Rencana PDF diunduh 📄'); }
+  }).catch(function(){ toast('Gagal membuat gambar'); });
+}
+function exportTripExcel(t){
+  try{ var blob=new Blob(['\ufeff'+buildTripXls(t)],{type:'application/vnd.ms-excel'}); downloadBlobRK(blob,'Travel-'+slugTrip(t)+'.xls'); toast('Excel diunduh 📊'); }
+  catch(e){ toast('Gagal membuat Excel'); }
+}
+function TripExportSheet({ctx,trip}){
+  const t=ctx.store.state.trips.find(x=>x.id===trip.id)||trip;
+  const hasPlan=!!(t.segments&&t.segments.length);
+  const opt=(icon,color,title,sub,onClick)=>h('button',{className:'btn',style:{width:'100%',justifyContent:'flex-start',gap:12,padding:14,marginBottom:10,background:'var(--card)',border:'1px solid var(--line)',color:'var(--ink)'},onClick},[
+    h('span',{key:'ic',style:{width:38,height:38,borderRadius:11,background:color+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},h(Icon,{name:icon,size:18,color})),
+    h('span',{key:'t',className:'grow',style:{textAlign:'left',minWidth:0}},[h('div',{key:'a',style:{fontWeight:800,fontSize:14.5}},title),h('div',{key:'b',className:'b-xs muted',style:{marginTop:1}},sub)]),
+    h(Icon,{key:'r',name:'right',size:16,color:'var(--inkSoft)'}),
+  ]);
+  return h('div',null,[
+    h(SheetHeader,{key:'h',title:'Ekspor perjalanan'}),
+    h('div',{key:'n',className:'b-sm muted',style:{marginBottom:14,lineHeight:1.5}}, hasPlan?'Pilih format ekspor untuk trip ini.':'Tambahkan agenda dulu di tab Rencana agar ada yang bisa diekspor.'),
+    ...(hasPlan?[
+      opt('trending',C.maroon,'Rencana → PDF','Itinerary rapi, siap cetak/dibagikan',()=>{ ctx.closeSheet(); setTimeout(()=>exportTripPlanImage(t,'pdf'),80); }),
+      opt('camera',C.clay,'Rencana → JPG','Gambar untuk dibagikan di chat',()=>{ ctx.closeSheet(); setTimeout(()=>exportTripPlanImage(t,'jpg'),80); }),
+      opt('savings',C.income,'Rencana + Persiapan → Excel','Dua sheet: agenda & checklist bawaan',()=>{ ctx.closeSheet(); setTimeout(()=>exportTripExcel(t),80); }),
+    ]:[]),
+  ]);
+}
+
 function TripScreen({ctx}){
   const {store,setOverlay,openSheet}=ctx; const s=store.state;
   const initOpen=(function(){ const v=window.__openTripId; window.__openTripId=undefined; return v||null; })();
@@ -3582,7 +4044,10 @@ function TripDetail({ctx,trip,onBack}){
   const catById=id=>s.categories.find(c=>c.id===id)||{id,name:'Lainnya',color:C.inkSoft};
   return h('div',{style:{paddingBottom:40},className:'fadein'},[
     h(OverlayHeader,{key:'h',title:t.dest,onBack,
-      action:h('button',{className:'iconbtn',onClick:()=>openSheet('trip',{edit:t})},h(Icon,{name:'edit',size:17,color:'var(--ink)'}))}),
+      action:h('div',{className:'row gap8'},[
+        h('button',{key:'ex',className:'btn btn-sm',style:{background:C.teal+'1a',color:C.teal,fontWeight:700},onClick:()=>openSheet('tripExport',{trip:t})},[h(Icon,{key:'i',name:'trending',size:15,color:C.teal}),'Ekspor']),
+        h('button',{key:'ed',className:'iconbtn',onClick:()=>openSheet('trip',{edit:t})},h(Icon,{name:'edit',size:17,color:'var(--ink)'})),
+      ])}),
     h('div',{key:'bd',style:{padding:'6px 18px 0'}},[
       h('div',{key:'sub',className:'b-sm muted',style:{marginBottom:12}},`${tanggal(t.start)} – ${tanggal(t.end)} · ${tripDurasi(t.start,t.end)} hari`),
       // ringkasan

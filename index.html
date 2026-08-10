@@ -2355,24 +2355,35 @@ function fromInputDate(str){ const [y,m,d]=str.split('-').map(Number); return ne
 /* ---- TxSheet ---- */
 function TxSheet({ctx,edit,presetTrip}){
   const {store,account,closeSheet}=ctx; const s=store.state;
+  const presetObj=presetTrip?s.trips.find(t=>t.id===presetTrip):null;
+  // tanggal awal: saat "Catat pengeluaran trip ini", isi tanggal di dalam rentang trip agar auto-cocok
+  const initDate=edit?edit.date:(function(){
+    if(presetObj){ const a=asDate(presetObj.start),b=asDate(presetObj.end),now=FIN_TODAY;
+      const kn=now.getFullYear()*10000+now.getMonth()*100+now.getDate();
+      const ka=a.getFullYear()*10000+a.getMonth()*100+a.getDate();
+      const kb=b.getFullYear()*10000+b.getMonth()*100+b.getDate();
+      return (kn>=ka&&kn<=kb)?now:a; }
+    return FIN_TODAY;
+  })();
   const [type,setType]=useState(edit?(s.categories.find(c=>c.id===edit.categoryId)||{}).type||'expense':'expense');
-  const [mode,setMode]=useState(((edit&&edit.tripId)||presetTrip)?'travel':'default'); // default|travel (pengeluaran)
-  const [tripId,setTripId]=useState((edit&&edit.tripId)||presetTrip||(s.trips[0]&&s.trips[0].id)||null);
+  const [mode,setMode]=useState(((edit&&edit.tripId)||presetTrip||tripForDate(s,initDate))?'travel':'default'); // default|travel
   const cats=s.categories.filter(c=>c.type===type);
   const [catId,setCatId]=useState(edit?edit.categoryId:cats[0]?.id);
   const [amount,setAmount]=useState(edit?edit.amount:0);
   const [note,setNote]=useState(edit?edit.note:'');
-  const [date,setDate]=useState(edit?edit.date:FIN_TODAY);
+  const [date,setDate]=useState(initDate);
   const [by,setBy]=useState(edit?edit.by:account.key);
   useEffect(()=>{ if(!cats.find(c=>c.id===catId)) setCatId(cats[0]?.id); },[type]);
   const travel=type==='expense'&&mode==='travel';
+  const autoTrip=travel?tripForDate(s,date):null;                 // trip dari rentang tanggal
+  const keptTrip=(travel&&!autoTrip&&edit&&edit.tripId)?s.trips.find(t=>t.id===edit.tripId):null; // pertahankan tag lama bila di luar rentang
+  const matchedTrip=autoTrip||keptTrip;
   const save=()=>{ if(!catId||amount<=0){toast('Lengkapi kategori & nominal');return;}
     const tx={id:edit?edit.id:'',categoryId:catId,amount,date,note:note||'(tanpa catatan)',by};
-    if(travel&&tripId) tx.tripId=tripId; else tx.tripId=null;
+    tx.tripId=matchedTrip?matchedTrip.id:null;
     if(edit)store.updateTx(tx); else store.addTx(tx);
     closeSheet();
-    const tr=(travel&&tripId)?s.trips.find(t=>t.id===tripId):null;
-    toast(tr?`Tercatat → masuk budget "${tr.dest}"`:(edit?'Transaksi diperbarui':'Transaksi dicatat')); };
+    toast(matchedTrip?`Tercatat → trip "${matchedTrip.dest}"`:(edit?'Transaksi diperbarui':'Transaksi dicatat')); };
   return h('div',null,[
     h(SheetHeader,{key:'h',title:edit?'Edit Transaksi':'Catat Transaksi',onDelete:edit?()=>{store.deleteTx(edit.id);closeSheet();toast('Transaksi dihapus');}:null}),
     h('div',{key:'ty',className:'segsimple',style:{width:'100%',marginBottom:14}}, [['expense','Pengeluaran'],['income','Pemasukan']].map(([k,l])=>
@@ -2382,13 +2393,31 @@ function TxSheet({ctx,edit,presetTrip}){
       h('div',{key:'sg',className:'segsimple',style:{width:'100%'}}, [['default','Default'],['travel','Travel']].map(([k,l])=>
         h('button',{key:k,className:(mode===k?'active':'')+' grow',style:{flex:1},onClick:()=>setMode(k)},l))),
       h('div',{key:'hint',className:'b-xs',style:{marginTop:7,color:travel?C.clay:'var(--inkSoft)',lineHeight:1.5}},
-        travel?'✈ Travel: masuk perhitungan budget trip (aktual per kategori → over/under). Dikecualikan dari saldo & "Cukup ~hari".':'Default: pengeluaran rumah tangga biasa.'),
+        travel?'✈ Travel: otomatis masuk trip sesuai tanggal. Aktual per kategori → over/under, dikecualikan dari saldo & "Cukup ~hari".':'Default: pengeluaran rumah tangga biasa.'),
     ]):null,
     travel?h('div',{key:'tp',style:{marginBottom:14}},[
-      h('label',{key:'l',className:'label'},'Untuk trip'),
-      s.trips.length? h('div',{className:'row wrap gap8'}, s.trips.map(t=>
-        h('button',{key:t.id,className:'selopt',style:tripId===t.id?{borderColor:C.clay,background:C.clay+'1a',color:C.clay}:null,onClick:()=>setTripId(t.id)},'🎒 '+t.dest)))
-        : h('div',{className:'b-sm muted'},'Belum ada trip. Buat dulu di Traveling.'),
+      h('label',{key:'l',className:'label'},'Untuk trip (otomatis dari tanggal)'),
+      autoTrip
+        ? h('div',{className:'row gap10',style:{padding:'11px 13px',borderRadius:12,border:'1px solid '+C.clay+'59',background:C.clay+'12'}},[
+            h('span',{key:'e',style:{fontSize:18,flexShrink:0}},'🎒'),
+            h('div',{key:'g',className:'grow',style:{minWidth:0}},[
+              h('div',{key:'a',style:{fontWeight:800,fontSize:14,color:C.clay,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},autoTrip.dest),
+              h('div',{key:'b',className:'b-xs muted'},`${tanggal(asDate(autoTrip.start))} – ${tanggal(asDate(autoTrip.end))}`),
+            ]),
+            h(Icon,{key:'i',name:'check',size:18,color:C.clay}),
+          ])
+        : keptTrip
+        ? h('div',{className:'row gap10',style:{padding:'11px 13px',borderRadius:12,border:'1px solid '+C.gold+'66',background:C.gold+'14'}},[
+            h('span',{key:'e',style:{fontSize:18,flexShrink:0}},'🎒'),
+            h('div',{key:'g',className:'grow',style:{minWidth:0}},[
+              h('div',{key:'a',style:{fontWeight:800,fontSize:14,color:C.goldDark,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},keptTrip.dest),
+              h('div',{key:'b',className:'b-xs muted',style:{lineHeight:1.4}},'Di luar rentang tanggal — tetap ditautkan. Pilih "Default" untuk melepas.'),
+            ]),
+          ])
+        : h('div',{className:'row gap8',style:{padding:'11px 13px',borderRadius:12,border:'1px solid var(--line)',background:'var(--surface)'}},[
+            h(Icon,{key:'i',name:'clock',size:16,color:'var(--inkSoft)'}),
+            h('div',{key:'t',className:'b-sm muted',style:{lineHeight:1.5}}, s.trips.length?'Tidak ada trip pada tanggal ini. Pilih tanggal di dalam rentang trip agar otomatis masuk hitungan trip.':'Belum ada trip. Buat dulu di Traveling.'),
+          ]),
     ]):null,
     h('label',{key:'l1',className:'label'},'Kategori'),
     h('div',{key:'cs',className:'row wrap gap8',style:{marginBottom:14}}, cats.map(c=>
@@ -3815,6 +3844,21 @@ function toastUndo(msg,onUndo){
 function tripDurasi(a,b){ const d=Math.round((new Date(b.getFullYear(),b.getMonth(),b.getDate())-new Date(a.getFullYear(),a.getMonth(),a.getDate()))/86400000)+1; return d; }
 function tripActualTx(s,t){ return s.transactions.filter(x=>x.tripId===t.id); }
 function tripActual(s,t){ return tripActualTx(s,t).reduce((a,x)=>a+x.amount,0); }
+// Trip yang rentang tanggalnya memuat tanggal d (inklusif). Dipakai untuk auto-tag transaksi Travel.
+function tripForDate(s,d){
+  if(!d) return null;
+  var dd=asDate(d); if(!dd||isNaN(+dd)) return null;
+  var key=dd.getFullYear()*10000+dd.getMonth()*100+dd.getDate();
+  var found=null;
+  (s.trips||[]).forEach(function(t){
+    if(found||!t.start||!t.end) return;
+    var a=asDate(t.start), b=asDate(t.end); if(!a||!b) return;
+    var ka=a.getFullYear()*10000+a.getMonth()*100+a.getDate();
+    var kb=b.getFullYear()*10000+b.getMonth()*100+b.getDate();
+    if(key>=ka&&key<=kb) found=t;
+  });
+  return found;
+}
 function estByCat(t){ const m={}; (t.segments||[]).forEach(sg=>(sg.estItems||[]).forEach(e=>{ m[e.categoryId]=(m[e.categoryId]||0)+e.amount; })); return m; }
 function actByCat(s,t){ const m={}; tripActualTx(s,t).forEach(x=>{ m[x.categoryId]=(m[x.categoryId]||0)+x.amount; }); return m; }
 function segTimeLabel(sg){
@@ -4102,7 +4146,7 @@ function TripExportSheet({ctx,trip,tab}){
   const go=fn=>{ ctx.closeSheet(); setTimeout(fn,80); };
   const opt=(icon,color,title,sub,onClick)=>h('button',{className:'btn',disabled:!hasPlan,style:{width:'100%',justifyContent:'flex-start',gap:12,padding:13,marginBottom:9,background:'var(--card)',border:'1px solid var(--line)',color:'var(--ink)',opacity:hasPlan?1:.5},onClick:hasPlan?onClick:undefined},[
     h('span',{key:'ic',style:{width:36,height:36,borderRadius:10,background:color+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},h(Icon,{name:icon,size:17,color})),
-    h('span',{key:'t',className:'grow',style:{textAlign:'left',minWidth:0}},[h('div',{key:'a',style:{fontWeight:800,fontSize:14}},title),h('div',{key:'b',className:'b-xs muted',style:{marginTop:1}},sub)]),
+    h('span',{key:'t',className:'grow',style:{textAlign:'left',minWidth:0,whiteSpace:'normal',overflowWrap:'anywhere'}},[h('div',{key:'a',style:{fontWeight:800,fontSize:14}},title),h('div',{key:'b',className:'b-xs muted',style:{marginTop:1,lineHeight:1.35}},sub)]),
     h(Icon,{key:'r',name:'right',size:15,color:'var(--inkSoft)'}),
   ]);
   const sec=(txt,hint)=>h('div',{className:'between',style:{margin:'6px 2px 8px'}},[
@@ -4222,10 +4266,13 @@ function TripDetail({ctx,trip,onBack}){
         ]),
         ...catIds.map(cid=>{ const c=catById(cid); const e=eb[cid]||0,a=ab[cid]||0; const unplanned=e===0&&a>0; const ov=a>e&&e>0; const pct=e?Math.min(100,a/e*100):(a>0?100:0);
           return h('div',{key:cid,style:{marginBottom:11}},[
-            h('div',{key:'l',className:'between',style:{marginBottom:5}},[
-              h('span',{key:'n',className:'row gap6',style:{fontWeight:700,fontSize:13.5}},[h('span',{key:'d',style:{width:8,height:8,borderRadius:8,background:c.color}}),c.name,
-                unplanned?h('span',{key:'x',className:'b-xs',style:{color:C.clay,fontWeight:800}},'· tak dianggarkan'):(ov?h('span',{key:'x',className:'b-xs',style:{color:C.expense,fontWeight:800}},'· over'):null)]),
-              h('span',{key:'v',className:'b-sm',style:{fontWeight:700}},[h('span',{key:'x',style:{color:(ov||unplanned)?C.expense:C.income}},rupiah(a)),h('span',{key:'y',className:'muted'},` / ${rupiah(e)}`)]),
+            h('div',{key:'l',className:'row',style:{justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:5}},[
+              h('div',{key:'n',className:'row gap6',style:{minWidth:0,flex:1,alignItems:'center'}},[
+                h('span',{key:'d',style:{width:8,height:8,borderRadius:8,background:c.color,flexShrink:0}}),
+                h('span',{key:'nm',style:{fontWeight:700,fontSize:13.5,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},c.name),
+                (unplanned||ov)?h('span',{key:'x',className:'chip',style:{flexShrink:0,fontSize:9.5,fontWeight:800,padding:'1px 7px',background:(unplanned?C.clay:C.expense)+'1f',color:unplanned?C.clay:C.expense}},unplanned?'tak dianggarkan':'over'):null,
+              ]),
+              h('span',{key:'v',className:'b-sm',style:{fontWeight:700,flexShrink:0,whiteSpace:'nowrap'}},[h('span',{key:'x',style:{color:(ov||unplanned)?C.expense:C.income}},rupiah(a)),h('span',{key:'y',className:'muted'},` / ${rupiah(e)}`)]),
             ]),
             h('div',{key:'p',className:'progress',style:{height:6}},h('div',{style:{width:pct+'%',background:(ov||unplanned)?C.expense:c.color}})),
           ]);

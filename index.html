@@ -2203,7 +2203,6 @@ function weekOfMonth(d){ return Math.floor((d.getDate()-1)/7)+1; } // 1..5
 function TxTab({s,calc,q,setQ,period,setPeriod,typeF,setTypeF,today,openSheet,
                 pickerOpen,setPickerOpen,weekSel,setWeekSel,monthSel,setMonthSel,yearSel,setYearSel}){
   let list=s.transactions.filter(tx=>{
-    if(tx.tripId)return false;
     const cat=calc.catById(tx.categoryId); if(!cat)return false;
     if(typeF==='in'&&cat.type!=='income')return false;
     if(typeF==='out'&&cat.type!=='expense')return false;
@@ -2250,7 +2249,7 @@ function TxTab({s,calc,q,setQ,period,setPeriod,typeF,setTypeF,today,openSheet,
     (period==='week'&&!pickerOpen)?h('div',{key:'wl',className:'b-sm muted',style:{marginBottom:10,fontWeight:600}},weekLabel+' · '+BULAN[today.getMonth()]):null,
     (period==='month'&&!pickerOpen)?h('div',{key:'ml',className:'b-sm muted',style:{marginBottom:10,fontWeight:600}},monthLabelSel):null,
     list.length===0?h('div',{key:'e',className:'muted',style:{textAlign:'center',padding:'30px 0'}},'Tidak ada transaksi yang cocok.'):null,
-    ...list.map(tx=>h(TxItem,{key:tx.id,tx,cat:calc.catById(tx.categoryId),openSheet})),
+    ...list.map(tx=>h(TxItem,{key:tx.id,tx,cat:calc.catById(tx.categoryId),trip:tx.tripId?s.trips.find(t=>t.id===tx.tripId):null,openSheet})),
   ]);
 }
 
@@ -2279,17 +2278,24 @@ function MonthPicker({monthSel,setMonthSel,yearSel,setYearSel,close}){
   ]);
 }
 
-function TxItem({tx,cat,openSheet}){
+function TxItem({tx,cat,trip,openSheet}){
   const isIncome=cat&&cat.type==='income';
+  const isTravel=!!tx.tripId;
   return h('div',{style:{marginBottom:8}},h(Card,{pad:false,style:{padding:12},onClick:()=>openSheet('tx',{edit:tx})},
     h('div',{className:'row gap12',style:{cursor:'pointer'}},[
-      h('div',{key:'ic',style:{width:42,height:42,borderRadius:12,background:cat?cat.color:C.inkSoft,display:'flex',alignItems:'center',justifyContent:'center'}},
+      h('div',{key:'ic',style:{width:42,height:42,borderRadius:12,background:cat?cat.color:C.inkSoft,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},
         h(Icon,{name:cat?cat.icon:'wallet',size:20,color:'#fff'})),
-      h('div',{key:'g',className:'grow'},[
-        h('div',{key:'n',style:{fontWeight:700}},tx.note),
-        h('div',{key:'m',className:'b-sm muted'},`${cat?cat.name:''} · ${tanggal(tx.date)} · ${displayName(tx.by)}`),
+      h('div',{key:'g',className:'grow',style:{minWidth:0}},[
+        h('div',{key:'n',className:'row gap6',style:{alignItems:'center'}},[
+          h('span',{key:'t',style:{fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},tx.note),
+          isTravel?h('span',{key:'b',className:'chip',style:{background:C.clay+'1f',color:C.clay,fontWeight:800,fontSize:10,flexShrink:0}},'Travel'):null,
+        ]),
+        h('div',{key:'m',className:'b-sm muted',style:{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},`${cat?cat.name:''} · ${tanggal(tx.date)} · ${displayName(tx.by)}`+(isTravel&&trip?(' · '+trip.dest):'')),
       ]),
-      h('div',{key:'a',style:{fontWeight:800,color:isIncome?C.income:C.expense}},`${isIncome?'+':'−'}${rupiah(tx.amount)}`),
+      h('div',{key:'a',style:{textAlign:'right',flexShrink:0}},[
+        h('div',{key:'v',style:{fontWeight:800,color:isTravel?C.clay:(isIncome?C.income:C.expense)}},`${isIncome?'+':'−'}${rupiah(tx.amount)}`),
+        isTravel?h('div',{key:'x',className:'b-xs muted',style:{fontWeight:700,marginTop:1}},'tak dihitung'):null,
+      ]),
     ])));
 }
 
@@ -3841,47 +3847,112 @@ function downloadBlobRK(blob,filename){
 function downloadDataUrlRK(dataUrl,filename){
   var a=document.createElement('a'); a.href=dataUrl; a.download=filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
-function buildPlanSVG(t){
-  var W=760, pad=28, y=0;
-  var teal=C.teal, gold=C.goldDark, ink='#3A342A', soft='#8A8172', line='#EAE1CE', clay=C.clay, cream='#FFFDF8', bg='#F6F1E7';
-  function T(x,ty,s,size,color,weight,anchor){
-    return '<text x="'+x+'" y="'+ty+'" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="'+size+'" fill="'+color+'"'+(weight?(' font-weight="'+weight+'"'):'')+(anchor?(' text-anchor="'+anchor+'"'):'')+'>'+xmlEsc(s)+'</text>';
-  }
-  function wrap(s,max){ s=String(s||''); var w=s.split(' '),ln=[],cur=''; for(var i=0;i<w.length;i++){ var tr=cur?cur+' '+w[i]:w[i]; if(tr.length>max&&cur){ln.push(cur);cur=w[i];}else cur=tr;} if(cur)ln.push(cur); return ln; }
-  var groups=tripDaysGrouped(t), estTotal=tripEst(t), headerH=118, body='';
-  y=headerH+8;
+// util SVG umum
+function svgText(x,ty,s,size,color,weight,anchor){
+  return '<text x="'+x+'" y="'+ty+'" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="'+size+'" fill="'+color+'"'+(weight?(' font-weight="'+weight+'"'):'')+(anchor?(' text-anchor="'+anchor+'"'):'')+'>'+xmlEsc(s)+'</text>';
+}
+function svgWrap(s,max){ s=String(s||''); var w=s.split(' '),ln=[],cur=''; for(var i=0;i<w.length;i++){ var tr=cur?cur+' '+w[i]:w[i]; if(tr.length>max&&cur){ln.push(cur);cur=w[i];}else cur=tr;} if(cur)ln.push(cur); return ln; }
+function catMeta(s,id){ var c=((s&&s.categories)||[]).find(function(x){return x.id===id;}); return c||{id:id,name:'Lainnya',color:'#8A8172'}; }
+
+// ---- Rencana (itinerary) — visual eye-catching ----
+function buildPlanSVG(t,s){
+  var W=800, pad=30;
+  var teal=C.teal, gold=C.goldDark, ink='#3A342A', soft='#8A8172', line='#E7DFCC', cream='#FFFDF8', bg='#F6F1E7';
+  var T=svgText, wrap=svgWrap;
+  var groups=tripDaysGrouped(t), estTotal=tripEst(t), actTotal=tripActual(s,t);
+  var headerH=132, body='', y=headerH+22;
   groups.forEach(function(g,gi){
     var dlabel=HARI[g.date.getDay()]+', '+g.date.getDate()+' '+BULAN_SG[g.date.getMonth()]+' '+g.date.getFullYear();
     var dayEst=g.segs.reduce(function(a,sg){return a+segEst(sg);},0);
-    body+='<circle cx="'+(pad+13)+'" cy="'+(y+9)+'" r="13" fill="'+teal+'"/>'+T(pad+13,y+14,String(gi+1),13,'#fff',700,'middle');
-    body+=T(pad+36,y+8,dlabel,15,ink,700)+T(W-pad,y+8,'Estimasi '+rupiah(dayEst),12.5,soft,700,'end');
-    y+=34;
+    var dayAct=tripActualTx(s,t).filter(function(x){return dateKey(asDate(x.date))===g.key;}).reduce(function(a,x){return a+x.amount;},0);
+    // pita hari
+    body+='<rect x="'+pad+'" y="'+(y-16)+'" width="'+(W-pad*2)+'" height="30" rx="8" fill="'+teal+'" fill-opacity="0.10"/>';
+    body+='<circle cx="'+(pad+17)+'" cy="'+(y-1)+'" r="12" fill="'+teal+'"/>'+T(pad+17,y+3.5,String(gi+1),12,'#fff',800,'middle');
+    body+=T(pad+38,y+3,dlabel,14.5,teal,800);
+    body+=T(W-pad-10,y+3,'Est '+rupiah(dayEst)+(dayAct>0?('   ·   Akt '+rupiah(dayAct)):''),12,soft,700,'end');
+    y+=32;
     g.segs.forEach(function(sg){
       var via=sg.transport?TRANSPORT_LABEL[sg.transport]:'';
-      var actLines=wrap(sg.activity||'-',52);
-      var locLine=sg.location?('Lokasi: '+sg.location):''; var est=segEst(sg);
-      var innerLines=actLines.length+(locLine?1:0)+1+(est>0?1:0);
-      var cardH=18+innerLines*20+8;
+      var timeS=(sg.startTime?fmtTime(sg.startTime):'—')+(segEndLabel(sg)?('  '+segEndLabel(sg)):'');
+      var actLines=wrap(sg.activity||'-',48);
+      var locLine=sg.location?sg.location:''; 
+      var items=(sg.estItems||[]);
+      var prepN=(sg.prep||[]).length, prepDone=(sg.prep||[]).filter(function(p){return p.done;}).length;
+      var innerLines=1/*time*/+actLines.length+(locLine?1:0)+items.length+(prepN?1:0);
+      var cardH=16+innerLines*20+8;
       body+='<rect x="'+pad+'" y="'+y+'" width="'+(W-pad*2)+'" height="'+cardH+'" rx="14" fill="'+cream+'" stroke="'+line+'"/>';
-      var tx=pad+16, ty=y+26;
-      var timeS=(sg.startTime?fmtTime(sg.startTime):'—')+(segEndLabel(sg)?('   '+segEndLabel(sg)):'');
-      body+=T(tx,ty,timeS+(via?('    ·   '+via):''),12.5,clay,700); ty+=22;
-      actLines.forEach(function(al){ body+=T(tx,ty,al,14.5,ink,700); ty+=20; });
-      if(locLine){ body+=T(tx,ty,locLine,12.5,soft,600); ty+=20; }
-      if(est>0){ body+=T(tx,ty,'Estimasi: '+rupiah(est),12.5,gold,700); ty+=20; }
-      y+=cardH+10;
+      body+='<rect x="'+pad+'" y="'+y+'" width="5" height="'+cardH+'" rx="2.5" fill="'+(sg.transport?C.clay:teal)+'"/>';
+      var tx=pad+18, ty=y+24;
+      body+=T(tx,ty,timeS,13,C.clay,800)+(via?T(tx+ (timeS.length*7.6)+16,ty,'· '+via,12,soft,700):''); ty+=22;
+      actLines.forEach(function(al){ body+=T(tx,ty,al,15,ink,800); ty+=20; });
+      if(locLine){ body+='<circle cx="'+(tx+3)+'" cy="'+(ty-4)+'" r="2.6" fill="'+soft+'"/>'+T(tx+12,ty,locLine,12,soft,600); ty+=20; }
+      items.forEach(function(e){ var cm=catMeta(s,e.categoryId);
+        body+='<circle cx="'+(tx+4)+'" cy="'+(ty-4)+'" r="4" fill="'+cm.color+'"/>'+T(tx+16,ty,cm.name,12.5,ink,600)+T(W-pad-12,ty,rupiah(e.amount),12.5,gold,800,'end'); ty+=20; });
+      if(prepN){ body+=T(tx,ty,'Bawaan: '+prepDone+'/'+prepN+' siap',12,C.sage,700); ty+=20; }
+      y+=cardH+12;
     });
-    y+=8;
+    y+=10;
   });
-  var H=y+pad+6;
+  var H=y+pad+2;
   var svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">';
+  svg+='<defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="'+teal+'"/><stop offset="1" stop-color="'+C.sage+'"/></linearGradient></defs>';
   svg+='<rect width="'+W+'" height="'+H+'" fill="'+bg+'"/>';
-  svg+='<rect x="0" y="0" width="'+W+'" height="'+headerH+'" fill="'+teal+'"/>';
-  svg+=T(pad,50,'Rencana Perjalanan',22,'#fff',800);
-  svg+=T(pad,78,t.dest||'',16,'#E7EFEC',700);
-  svg+=T(pad,102,tanggal(t.start)+'  –  '+tanggal(t.end)+'   ·   '+tripDurasi(t.start,t.end)+' hari',12.5,'#CFE0DB',600);
-  svg+=T(W-pad,74,'Total estimasi',12,'#CFE0DB',600,'end')+T(W-pad,98,rupiah(estTotal),18,'#fff',800,'end');
-  svg+=body+T(pad,H-14,'RumahKita — Anchor of Serenity',11,soft,600)+'</svg>';
+  svg+='<rect x="0" y="0" width="'+W+'" height="'+headerH+'" fill="url(#hg)"/>';
+  svg+=T(pad,50,'Rencana Perjalanan',24,'#fff',800);
+  svg+=T(pad,80,t.dest||'',17,'#EAF3F0',700);
+  svg+=T(pad,106,tanggal(t.start)+'  –  '+tanggal(t.end)+'   ·   '+tripDurasi(t.start,t.end)+' hari',12.5,'#D3E4DF',600);
+  // kotak total kanan
+  svg+='<rect x="'+(W-pad-232)+'" y="34" width="232" height="66" rx="12" fill="rgba(255,255,255,.14)"/>';
+  svg+=T(W-pad-116,58,'Total estimasi',11.5,'#EAF3F0',600,'middle')+T(W-pad-116,84,rupiah(estTotal),20,'#fff',800,'middle');
+  if(actTotal>0){ svg+=T(W-pad-116,100,'aktual '+rupiah(actTotal),11,'#D3E4DF',700,'middle'); }
+  svg+=body+T(pad,H-14,'RumahKita — Anchor of Serenity',11,soft,700)+T(W-pad,H-14,'dibuat '+tanggal(new Date()),10.5,soft,600,'end')+'</svg>';
+  return {svg:svg,width:W,height:H};
+}
+
+// ---- Persiapan (checklist) — visual eye-catching ----
+function buildPrepSVG(t,s){
+  var W=800, pad=30;
+  var clay=C.clay, gold=C.goldDark, ink='#3A342A', soft='#8A8172', line='#E7DFCC', cream='#FFFDF8', bg='#F6F1E7', income=C.income;
+  var T=svgText, wrap=svgWrap;
+  var groups=tripDaysGrouped(t);
+  var total=0, done=0;
+  (t.segments||[]).forEach(function(sg){ (sg.prep||[]).forEach(function(p){ total++; if(p.done)done++; }); });
+  var pct=total?Math.round(done/total*100):0;
+  function checkbox(x,ty,ok){ var s2=15; var box='<rect x="'+x+'" y="'+(ty-12)+'" width="'+s2+'" height="'+s2+'" rx="4" fill="'+(ok?income:'#fff')+'" stroke="'+(ok?income:'#C9BFA6')+'" stroke-width="1.6"/>'; var chk=ok?('<path d="M'+(x+3.2)+' '+(ty-4.5)+' l3 3 l5.5 -6.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'):''; return box+chk; }
+  var headerH=150, body='', y=headerH+22;
+  groups.forEach(function(g){
+    g.segs.forEach(function(sg){
+      var items=(sg.prep||[]);
+      var titleLines=wrap(sg.activity||'Agenda',52);
+      var sub=HARI[g.date.getDay()]+', '+g.date.getDate()+' '+BULAN_SG[g.date.getMonth()]+(sg.startTime?(' · '+fmtTime(sg.startTime)):'');
+      var innerLines=titleLines.length+1+Math.max(items.length,1);
+      var cardH=16+innerLines*20+8;
+      body+='<rect x="'+pad+'" y="'+y+'" width="'+(W-pad*2)+'" height="'+cardH+'" rx="14" fill="'+cream+'" stroke="'+line+'"/>';
+      body+='<rect x="'+pad+'" y="'+y+'" width="5" height="'+cardH+'" rx="2.5" fill="'+clay+'"/>';
+      var tx=pad+18, ty=y+24;
+      titleLines.forEach(function(tl){ body+=T(tx,ty,tl,15,ink,800); ty+=20; });
+      body+=T(tx,ty,sub,11.5,soft,600); ty+=22;
+      if(!items.length){ body+=T(tx,ty,'(belum ada barang bawaan)',12.5,soft,600); ty+=20; }
+      items.forEach(function(p){ body+=checkbox(tx,ty,p.done); var col=p.done?soft:ink; body+=T(tx+24,ty,p.text||'',13.5,col,p.done?600:700);
+        if(p.done){ var w=(p.text||'').length*7.0; body+='<line x1="'+(tx+24)+'" y1="'+(ty-4)+'" x2="'+(tx+24+w)+'" y2="'+(ty-4)+'" stroke="'+soft+'" stroke-width="1.3"/>'; } ty+=20; });
+      y+=cardH+12;
+    });
+  });
+  if(!total && groups.length===0){ body+=T(pad,y+10,'Belum ada agenda / bawaan.',13,soft,600); y+=30; }
+  var H=y+pad+2;
+  var svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">';
+  svg+='<defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="'+clay+'"/><stop offset="1" stop-color="'+gold+'"/></linearGradient></defs>';
+  svg+='<rect width="'+W+'" height="'+H+'" fill="'+bg+'"/>';
+  svg+='<rect x="0" y="0" width="'+W+'" height="'+headerH+'" fill="url(#pg)"/>';
+  svg+=T(pad,48,'Persiapan Perjalanan',24,'#fff',800);
+  svg+=T(pad,76,t.dest||'',17,'#FBEEE2',700);
+  svg+=T(pad,100,tanggal(t.start)+'  –  '+tanggal(t.end)+'   ·   '+tripDurasi(t.start,t.end)+' hari',12.5,'#F5E2D2',600);
+  // progress bar
+  var barX=pad, barY=118, barW=W-pad*2-150, barH=12;
+  svg+='<rect x="'+barX+'" y="'+barY+'" width="'+barW+'" height="'+barH+'" rx="6" fill="rgba(255,255,255,.28)"/>';
+  svg+='<rect x="'+barX+'" y="'+barY+'" width="'+(barW*pct/100)+'" height="'+barH+'" rx="6" fill="#fff"/>';
+  svg+=T(W-pad,barY+11,done+' / '+total+' siap  ·  '+pct+'%',13,'#fff',800,'end');
+  svg+=body+T(pad,H-14,'RumahKita — Anchor of Serenity',11,soft,700)+T(W-pad,H-14,'dibuat '+tanggal(new Date()),10.5,soft,600,'end')+'</svg>';
   return {svg:svg,width:W,height:H};
 }
 function svgToJpeg(svgObj,scale){
@@ -3921,66 +3992,141 @@ function jpegToPdfBlob(jpegDataUrl,wPx,hPx){
   for(var j=0;j<pdf.length;j++){ bytes[j]=pdf.charCodeAt(j)&0xff; }
   return new Blob([bytes],{type:'application/pdf'});
 }
-function buildTripXls(t){
-  function cell(v){ return '<Cell><Data ss:Type="String">'+xmlEsc(v)+'</Data></Cell>'; }
-  function num(v){ return '<Cell><Data ss:Type="Number">'+(v||0)+'</Data></Cell>'; }
+function buildTripXls(t,s){
+  function cell(v,style){ return '<Cell'+(style?(' ss:StyleID="'+style+'"'):'')+'><Data ss:Type="String">'+xmlEsc(v)+'</Data></Cell>'; }
+  function rp(v,style){ return '<Cell ss:StyleID="'+(style||'rp')+'"><Data ss:Type="Number">'+(v||0)+'</Data></Cell>'; }
   function hcell(v){ return '<Cell ss:StyleID="hdr"><Data ss:Type="String">'+xmlEsc(v)+'</Data></Cell>'; }
   function row(cells){ return '<Row>'+cells.join('')+'</Row>'; }
+  function title(text,span){ return row(['<Cell ss:StyleID="ttl" ss:MergeAcross="'+(span-1)+'"><Data ss:Type="String">'+xmlEsc(text)+'</Data></Cell>']); }
+  function segEnd(sg){ if(!sg.startTime) return ''; if(sg.mode==='duration'){ return fmtTime(addMinTime(sg.startTime,sg.durationMin)); } return sg.endTime?fmtTime(sg.endTime):''; }
+  function segDur(sg){ if(!sg.startTime) return ''; if(sg.mode==='duration') return fmtDurMin(sg.durationMin); return sg.endTime?fmtDurMin(diffMinTime(sg.startTime,sg.endTime)):''; }
   var groups=tripDaysGrouped(t);
-  var rRows=[ row(['<Cell ss:StyleID="ttl" ss:MergeAcross="6"><Data ss:Type="String">'+xmlEsc('Rencana — '+(t.dest||'')+' ('+tanggal(t.start)+' – '+tanggal(t.end)+')')+'</Data></Cell>']),
-    row([hcell('Tanggal'),hcell('Mulai'),hcell('Selesai/Durasi'),hcell('Via'),hcell('Aktivitas'),hcell('Lokasi'),hcell('Estimasi (Rp)')]) ];
-  var grand=0;
+  // aktual per (hari|kategori) untuk kolom Aktual di sheet Rencana
+  var actDC={}; tripActualTx(s,t).forEach(function(x){ var k=dateKey(asDate(x.date))+'|'+x.categoryId; actDC[k]=(actDC[k]||0)+x.amount; });
+  var consumed={};
+
+  /* ---- Sheet 1: Rencana & Anggaran (Est + Aktual inline) ---- */
+  var COLS=10;
+  var rRows=[ title('Rencana — '+(t.dest||'')+'  ('+tanggal(t.start)+' – '+tanggal(t.end)+')',COLS),
+    row([hcell('Hari'),hcell('Tanggal'),hcell('Jam Mulai'),hcell('Jam Selesai'),hcell('Durasi'),hcell('Alokasi Budget'),hcell('Estimasi'),hcell('Aktual'),hcell('Deskripsi'),hcell('Catatan')]) ];
+  var estGrand=0, actGrand=0;
   groups.forEach(function(g){
-    var dlabel=HARI[g.date.getDay()]+', '+g.date.getDate()+' '+BULAN_SG[g.date.getMonth()]+' '+g.date.getFullYear();
-    g.segs.forEach(function(sg,i){ grand+=segEst(sg);
-      rRows.push(row([ cell(i===0?dlabel:''), cell(sg.startTime?fmtTime(sg.startTime):''), cell(segEndLabel(sg)),
-        cell(sg.transport?TRANSPORT_LABEL[sg.transport]:''), cell(sg.activity||''), cell(sg.location||''), num(segEst(sg)) ])); });
+    var hari=HARI[g.date.getDay()], tgl=('0'+g.date.getDate()).slice(-2)+'/'+('0'+(g.date.getMonth()+1)).slice(-2)+'/'+g.date.getFullYear();
+    var firstOfDay=true;
+    g.segs.forEach(function(sg){
+      var via=sg.transport?TRANSPORT_LABEL[sg.transport]:'';
+      var prepTxt=(sg.prep||[]).map(function(p){return p.text;}).join(', ');
+      var catatan=[via,prepTxt].filter(Boolean).join(' · ');
+      var items=(sg.estItems||[]);
+      if(!items.length) items=[{categoryId:null,amount:0}];
+      items.forEach(function(e,ei){
+        var cm=e.categoryId?catMeta(s,e.categoryId):{name:''};
+        var akt='';
+        if(e.categoryId){ var key=g.key+'|'+e.categoryId; if(!consumed[key] && actDC[key]){ akt=actDC[key]; consumed[key]=1; } }
+        estGrand+=e.amount||0; if(typeof akt==='number') actGrand+=akt;
+        rRows.push(row([
+          cell(firstOfDay?hari:'','day'), cell(firstOfDay?tgl:'','day'),
+          cell(ei===0?(sg.startTime?fmtTime(sg.startTime):''):''), cell(ei===0?segEnd(sg):''), cell(ei===0?segDur(sg):''),
+          cell(cm.name), rp(e.amount||0), (typeof akt==='number'?rp(akt,'rpb'):cell('')),
+          cell(ei===0?(sg.activity||''):''), cell(ei===0?catatan:'')
+        ]));
+        firstOfDay=false;
+      });
+    });
   });
-  rRows.push(row([cell(''),cell(''),cell(''),cell(''),cell(''),hcell('TOTAL'),'<Cell ss:StyleID="hdr"><Data ss:Type="Number">'+grand+'</Data></Cell>']));
-  var pRows=[ row(['<Cell ss:StyleID="ttl" ss:MergeAcross="3"><Data ss:Type="String">'+xmlEsc('Persiapan — '+(t.dest||''))+'</Data></Cell>']),
+  rRows.push(row([cell(''),cell(''),cell(''),cell(''),cell(''),hcell('TOTAL'),rp(estGrand,'rpt'),rp(actGrand,'rpt'),cell(''),cell('')]));
+
+  /* ---- Sheet 2: Anggaran (Est vs Aktual per kategori) ---- */
+  var eb=estByCat(t), ab=actByCat(s,t);
+  var cids=Array.from(new Set([].concat(Object.keys(eb),Object.keys(ab))));
+  var aRows=[ title('Anggaran per kategori (Estimasi vs Aktual) — '+(t.dest||''),5),
+    row([hcell('Kategori'),hcell('Estimasi'),hcell('Aktual'),hcell('Selisih'),hcell('Status')]) ];
+  var sumE=0,sumA=0;
+  cids.forEach(function(cid){ var cm=catMeta(s,cid); var e=eb[cid]||0,a=ab[cid]||0; sumE+=e; sumA+=a; var sel=e-a;
+    var st = (e===0&&a>0)?'Tak dianggarkan' : (a>e?'Over':'Aman'); var stStyle=(a>e||(e===0&&a>0))?'over':'ok';
+    aRows.push(row([ cell(cm.name), rp(e), rp(a), rp(sel), cell(st,stStyle) ])); });
+  aRows.push(row([hcell('TOTAL'),rp(sumE,'rpt'),rp(sumA,'rpt'),rp(sumE-sumA,'rpt'),cell(sumA>sumE?'Over':'Sisa',(sumA>sumE)?'over':'ok')]));
+
+  /* ---- Sheet 3: Realisasi (riwayat transaksi trip) ---- */
+  var txs=tripActualTx(s,t).slice().sort(function(a,b){return a.date-b.date;});
+  var reRows=[ title('Realisasi — riwayat transaksi bertanda Travel (tak menambah anggaran bulanan)',5),
+    row([hcell('Tanggal'),hcell('Kategori'),hcell('Deskripsi'),hcell('Jumlah'),hcell('Oleh')]) ];
+  var reSum=0;
+  txs.forEach(function(x){ var cm=catMeta(s,x.categoryId); reSum+=x.amount;
+    reRows.push(row([ cell(tanggal(x.date)), cell(cm.name), cell(x.note||''), rp(x.amount), cell(displayName(x.by)) ])); });
+  if(!txs.length) reRows.push(row([cell(''),cell(''),cell('(belum ada transaksi)'),cell(''),cell('')]));
+  else reRows.push(row([hcell('TOTAL'),cell(''),cell(''),rp(reSum,'rpt'),cell('')]));
+
+  /* ---- Sheet 4: Persiapan (checklist) ---- */
+  var pRows=[ title('Persiapan — '+(t.dest||''),4),
     row([hcell('Tanggal'),hcell('Agenda'),hcell('Barang bawaan'),hcell('Status')]) ];
   var anyPrep=false;
   groups.forEach(function(g){ var dlabel=g.date.getDate()+' '+BULAN_SG[g.date.getMonth()];
     g.segs.forEach(function(sg){ (sg.prep||[]).forEach(function(p){ anyPrep=true;
-      pRows.push(row([ cell(dlabel), cell(sg.activity||''), cell(p.text||''), cell(p.done?'Sudah':'Belum') ])); }); }); });
+      pRows.push(row([ cell(dlabel), cell(sg.activity||''), cell(p.text||''), cell(p.done?'Sudah':'Belum',p.done?'ok':'') ])); }); }); });
   if(!anyPrep) pRows.push(row([cell(''),cell(''),cell('(belum ada barang bawaan)'),cell('')]));
+
+  function sheet(name,rows){ return '<Worksheet ss:Name="'+name+'"><Table>'+rows.join('')+'</Table></Worksheet>\n'; }
   return '<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n'+
     '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n'+
     '<Styles>'+
-      '<Style ss:ID="hdr"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#3E6B63" ss:Pattern="Solid"/></Style>'+
+      '<Style ss:ID="hdr"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#3E6B63" ss:Pattern="Solid"/><Alignment ss:Vertical="Center"/></Style>'+
       '<Style ss:ID="ttl"><Font ss:Bold="1" ss:Size="13" ss:Color="#3E6B63"/></Style>'+
+      '<Style ss:ID="day"><Font ss:Bold="1" ss:Color="#3A342A"/></Style>'+
+      '<Style ss:ID="rp"><NumberFormat ss:Format="#,##0"/></Style>'+
+      '<Style ss:ID="rpb"><NumberFormat ss:Format="#,##0"/><Font ss:Bold="1" ss:Color="#4E7A5A"/></Style>'+
+      '<Style ss:ID="rpt"><NumberFormat ss:Format="#,##0"/><Font ss:Bold="1"/><Interior ss:Color="#F1EAD8" ss:Pattern="Solid"/></Style>'+
+      '<Style ss:ID="over"><Font ss:Bold="1" ss:Color="#B5544E"/></Style>'+
+      '<Style ss:ID="ok"><Font ss:Bold="1" ss:Color="#4E7A5A"/></Style>'+
     '</Styles>\n'+
-    '<Worksheet ss:Name="Rencana"><Table>'+rRows.join('')+'</Table></Worksheet>\n'+
-    '<Worksheet ss:Name="Persiapan"><Table>'+pRows.join('')+'</Table></Worksheet>\n'+
+    sheet('Rencana',rRows)+sheet('Anggaran',aRows)+sheet('Realisasi',reRows)+sheet('Persiapan',pRows)+
     '</Workbook>';
 }
-function exportTripPlanImage(t,kind){
-  var svgObj; try{ svgObj=buildPlanSVG(t); }catch(e){ toast('Gagal menyiapkan rencana'); return; }
+function exportTripVisual(t,s,which,kind){
+  var svgObj; var label = which==='prep'?'Persiapan':'Rencana';
+  try{ svgObj = which==='prep'? buildPrepSVG(t,s) : buildPlanSVG(t,s); }
+  catch(e){ toast('Gagal menyiapkan '+label.toLowerCase()); return; }
   svgToJpeg(svgObj,2).then(function(res){
-    if(kind==='jpg'){ downloadDataUrlRK(res.dataUrl,'Rencana-'+slugTrip(t)+'.jpg'); toast('Rencana JPG diunduh 🖼'); }
-    else { downloadBlobRK(jpegToPdfBlob(res.dataUrl,res.w,res.h),'Rencana-'+slugTrip(t)+'.pdf'); toast('Rencana PDF diunduh 📄'); }
+    if(kind==='jpg'){ downloadDataUrlRK(res.dataUrl, label+'-'+slugTrip(t)+'.jpg'); toast(label+' JPG diunduh 🖼'); }
+    else { downloadBlobRK(jpegToPdfBlob(res.dataUrl,res.w,res.h), label+'-'+slugTrip(t)+'.pdf'); toast(label+' PDF diunduh 📄'); }
   }).catch(function(){ toast('Gagal membuat gambar'); });
 }
-function exportTripExcel(t){
-  try{ var blob=new Blob(['\ufeff'+buildTripXls(t)],{type:'application/vnd.ms-excel'}); downloadBlobRK(blob,'Travel-'+slugTrip(t)+'.xls'); toast('Excel diunduh 📊'); }
+function exportTripExcel(t,s){
+  try{ var blob=new Blob(['\ufeff'+buildTripXls(t,s)],{type:'application/vnd.ms-excel'}); downloadBlobRK(blob,'Travel-'+slugTrip(t)+'.xls'); toast('Excel lengkap diunduh 📊'); }
   catch(e){ toast('Gagal membuat Excel'); }
 }
-function TripExportSheet({ctx,trip}){
-  const t=ctx.store.state.trips.find(x=>x.id===trip.id)||trip;
+function TripExportSheet({ctx,trip,tab}){
+  const s=ctx.store.state;
+  const t=s.trips.find(x=>x.id===trip.id)||trip;
   const hasPlan=!!(t.segments&&t.segments.length);
-  const opt=(icon,color,title,sub,onClick)=>h('button',{className:'btn',style:{width:'100%',justifyContent:'flex-start',gap:12,padding:14,marginBottom:10,background:'var(--card)',border:'1px solid var(--line)',color:'var(--ink)'},onClick},[
-    h('span',{key:'ic',style:{width:38,height:38,borderRadius:11,background:color+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},h(Icon,{name:icon,size:18,color})),
-    h('span',{key:'t',className:'grow',style:{textAlign:'left',minWidth:0}},[h('div',{key:'a',style:{fontWeight:800,fontSize:14.5}},title),h('div',{key:'b',className:'b-xs muted',style:{marginTop:1}},sub)]),
-    h(Icon,{key:'r',name:'right',size:16,color:'var(--inkSoft)'}),
+  const go=fn=>{ ctx.closeSheet(); setTimeout(fn,80); };
+  const opt=(icon,color,title,sub,onClick)=>h('button',{className:'btn',disabled:!hasPlan,style:{width:'100%',justifyContent:'flex-start',gap:12,padding:13,marginBottom:9,background:'var(--card)',border:'1px solid var(--line)',color:'var(--ink)',opacity:hasPlan?1:.5},onClick:hasPlan?onClick:undefined},[
+    h('span',{key:'ic',style:{width:36,height:36,borderRadius:10,background:color+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},h(Icon,{name:icon,size:17,color})),
+    h('span',{key:'t',className:'grow',style:{textAlign:'left',minWidth:0}},[h('div',{key:'a',style:{fontWeight:800,fontSize:14}},title),h('div',{key:'b',className:'b-xs muted',style:{marginTop:1}},sub)]),
+    h(Icon,{key:'r',name:'right',size:15,color:'var(--inkSoft)'}),
+  ]);
+  const sec=(txt,hint)=>h('div',{className:'between',style:{margin:'6px 2px 8px'}},[
+    h('span',{style:{fontWeight:800,fontSize:11.5,letterSpacing:.5,color:'var(--inkSoft)'}},txt.toUpperCase()),
+    hint?h('span',{className:'chip',style:{background:C.teal+'1f',color:C.teal,fontWeight:800,fontSize:10}},hint):null,
+  ]);
+  const planSection=h('div',{key:'plan'},[
+    sec('Rencana (agenda)', tab!==0?'sedang dibuka':null),
+    opt('calendar',C.teal,'Rencana → PDF','Kartu itinerary — siap cetak & dibagikan',()=>go(()=>exportTripVisual(t,s,'plan','pdf'))),
+    opt('camera',C.clay,'Rencana → JPG','Gambar untuk dibagikan di chat',()=>go(()=>exportTripVisual(t,s,'plan','jpg'))),
+  ]);
+  const prepSection=h('div',{key:'prep'},[
+    sec('Persiapan (checklist)', tab===0?'sedang dibuka':null),
+    opt('check',C.income,'Persiapan → PDF','Checklist bawaan dengan progres',()=>go(()=>exportTripVisual(t,s,'prep','pdf'))),
+    opt('camera',C.sage,'Persiapan → JPG','Gambar checklist untuk dibagikan',()=>go(()=>exportTripVisual(t,s,'prep','jpg'))),
   ]);
   return h('div',null,[
     h(SheetHeader,{key:'h',title:'Ekspor perjalanan'}),
-    h('div',{key:'n',className:'b-sm muted',style:{marginBottom:14,lineHeight:1.5}}, hasPlan?'Pilih format ekspor untuk trip ini.':'Tambahkan agenda dulu di tab Rencana agar ada yang bisa diekspor.'),
-    ...(hasPlan?[
-      opt('trending',C.maroon,'Rencana → PDF','Itinerary rapi, siap cetak/dibagikan',()=>{ ctx.closeSheet(); setTimeout(()=>exportTripPlanImage(t,'pdf'),80); }),
-      opt('camera',C.clay,'Rencana → JPG','Gambar untuk dibagikan di chat',()=>{ ctx.closeSheet(); setTimeout(()=>exportTripPlanImage(t,'jpg'),80); }),
-      opt('savings',C.income,'Rencana + Persiapan → Excel','Dua sheet: agenda & checklist bawaan',()=>{ ctx.closeSheet(); setTimeout(()=>exportTripExcel(t),80); }),
-    ]:[]),
+    h('div',{key:'n',className:'b-sm muted',style:{marginBottom:12,lineHeight:1.5}}, hasPlan?'Rencana & Persiapan diekspor sebagai gambar/PDF. Excel memuat semuanya sekaligus (rencana, persiapan, anggaran & realisasi).':'Tambahkan agenda dulu di tab Rencana agar ada yang bisa diekspor.'),
+    ...(tab===0?[prepSection,planSection]:[planSection,prepSection]),
+    h('div',{key:'xl'},[
+      sec('Semua data → Excel'),
+      opt('savings',C.goldDark,'Excel (.xls) lengkap','4 sheet: Rencana · Anggaran (est vs aktual) · Realisasi · Persiapan',()=>go(()=>exportTripExcel(t,s))),
+    ]),
   ]);
 }
 
@@ -4042,10 +4188,11 @@ function TripDetail({ctx,trip,onBack}){
   const eb=estByCat(t), ab=actByCat(s,t);
   const catIds=Array.from(new Set([...Object.keys(eb),...Object.keys(ab)]));
   const catById=id=>s.categories.find(c=>c.id===id)||{id,name:'Lainnya',color:C.inkSoft};
+  const tripTxs=tripActualTx(s,t).slice().sort((a,b)=>b.date-a.date);
   return h('div',{style:{paddingBottom:40},className:'fadein'},[
     h(OverlayHeader,{key:'h',title:t.dest,onBack,
       action:h('div',{className:'row gap8'},[
-        h('button',{key:'ex',className:'btn btn-sm',style:{background:C.teal+'1a',color:C.teal,fontWeight:700},onClick:()=>openSheet('tripExport',{trip:t})},[h(Icon,{key:'i',name:'trending',size:15,color:C.teal}),'Ekspor']),
+        h('button',{key:'ex',className:'btn btn-sm',style:{background:C.teal+'1a',color:C.teal,fontWeight:700},onClick:()=>openSheet('tripExport',{trip:t,tab})},[h(Icon,{key:'i',name:'trending',size:15,color:C.teal}),'Ekspor']),
         h('button',{key:'ed',className:'iconbtn',onClick:()=>openSheet('trip',{edit:t})},h(Icon,{name:'edit',size:17,color:'var(--ink)'})),
       ])}),
     h('div',{key:'bd',style:{padding:'6px 18px 0'}},[
@@ -4084,6 +4231,23 @@ function TripDetail({ctx,trip,onBack}){
           ]);
         }),
       ]):null,
+      // riwayat transaksi trip (realisasi) — muncul juga di Anggaran (bertanda Travel, tak dihitung)
+      h(Card,{key:'rw',style:{marginBottom:12}},[
+        h('div',{key:'h',className:'between',style:{marginBottom:tripTxs.length?8:0}},[
+          h('span',{key:'a',style:{fontWeight:800,fontSize:14.5}},'Riwayat transaksi'),
+          h('span',{key:'b',className:'b-xs muted',style:{fontWeight:700}}, tripTxs.length?(tripTxs.length+' transaksi · '+rupiah(actual)):'0 transaksi'),
+        ]),
+        tripTxs.length
+          ? h('div',{key:'l'}, tripTxs.map(tx=>{ const c=catById(tx.categoryId); return h('div',{key:tx.id,className:'row gap10',style:{padding:'8px 0',borderTop:'1px solid var(--line)',cursor:'pointer',alignItems:'flex-start'},onClick:()=>openSheet('tx',{edit:tx})},[
+              h('span',{key:'d',style:{width:9,height:9,borderRadius:9,background:c.color,marginTop:5,flexShrink:0}}),
+              h('div',{key:'g',className:'grow',style:{minWidth:0}},[
+                h('div',{key:'n',style:{fontWeight:700,fontSize:13.5,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},tx.note||c.name),
+                h('div',{key:'m',className:'b-xs muted'},`${c.name} · ${tanggal(tx.date)} · ${displayName(tx.by)}`),
+              ]),
+              h('span',{key:'a',style:{fontWeight:800,color:C.expense,fontSize:13.5,flexShrink:0}},'−'+rupiah(tx.amount)),
+            ]); }))
+          : h('div',{key:'e',className:'b-sm muted',style:{lineHeight:1.5}},'Belum ada. Catat lewat tombol di bawah. Transaksi Travel tak menambah anggaran bulanan, tapi tetap tercatat di sini dan tampil di Anggaran.'),
+      ]),
       // banner integrasi
       h('div',{key:'bn',className:'row gap8',style:{marginBottom:14,padding:'10px 12px',borderRadius:12,background:C.teal+'12'}},[
         h(Icon,{key:'i',name:'repeat',size:16,color:C.teal}),

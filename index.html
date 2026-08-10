@@ -654,7 +654,7 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
 <script type="module">
   /* ================= FIREBASE (Bagian 6) ================= */
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, setPersistence, inMemoryPersistence }
+  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, setPersistence, browserLocalPersistence }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
   import { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc,
            deleteDoc, addDoc, getDoc, Timestamp }
@@ -673,9 +673,10 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
   const auth = getAuth(app);
   const db   = getFirestore(app);
 
-  /* Persistence in-memory: sesi TIDAK disimpan antar buka-tutup app.
-     Konsekuensi: tiap buka app wajib pilih akun + isi kata sandi lagi. */
-  setPersistence(auth, inMemoryPersistence).catch(()=>{});
+  /* Persistence LOKAL: sesi bertahan antar buka-tutup / pindah app.
+     Keamanan dijaga oleh "kunci layar" 1 menit di sisi aplikasi (lihat App/LockScreen):
+     kembali < 1 menit → langsung masuk; > 1 menit → minta kata sandi lagi. */
+  setPersistence(auth, browserLocalPersistence).catch(()=>{});
 
   window.RKFB = {
     auth, db,
@@ -748,8 +749,14 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.09';
+const APP_VERSION='1.10';
 const CHANGELOG=[
+  {v:'1.10', date:'10 Agu 2026', items:[
+    'Foto sampul kini tersimpan di Firebase — kamu & pasangan melihat foto yang sama (satu file, ditimpa saat diganti).',
+    'Tetap login saat pindah app/layar mati; minta kata sandi lagi hanya bila pergi > 1 menit (kunci layar).',
+    'Konfirmasi "Keluar dari aplikasi?" saat menekan tombol kembali di Beranda.',
+    'Transaksi Travel otomatis masuk trip sesuai tanggal (tanpa pilih trip manual).',
+  ]},
   {v:'1.09', date:'10 Agu 2026', items:[
     'Perbaikan: tanggal agenda Travel yang sempat tampil "undefined" kini benar.',
     'Notifikasi berfungsi — izin perangkat + pengingat acara & jatuh tempo.',
@@ -833,10 +840,32 @@ function rkNotifScan(s){
 var RK_COVER_KEY='rk_cover_v1';
 function rkGetCover(){ try{ return window.localStorage.getItem(RK_COVER_KEY)||''; }catch(e){ return ''; } }
 function rkSetCover(dataUrl){ try{ if(dataUrl) window.localStorage.setItem(RK_COVER_KEY,dataUrl); else window.localStorage.removeItem(RK_COVER_KEY); }catch(e){} }
-// Baca file gambar -> kecilkan -> JPEG data URL (ringan, tak membebani Firestore; disimpan lokal saja).
+// Simpan foto sampul ke Firestore pada dokumen family (field "cover"), digabung (merge)
+// sehingga tidak mengganggu settings/members. setDoc menimpa isi lama -> tidak menumpuk memory.
+// Kedua akun melihat foto yang sama. Memakai dokumen yang sama dgn settings, jadi pasti lolos rules.
+function rkWriteCover(dataUrl){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  try{ FB.setDoc(base, {cover:dataUrl||''}, {merge:true}); }catch(e){}
+}
+function rkDeleteCover(){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  try{ FB.setDoc(base, {cover:''}, {merge:true}); }catch(e){}  // kosongkan -> byte lama tertimpa
+}
+// Terapkan foto sampul dari remote (Firestore) ke cache lokal + beri tahu UI.
+function rkApplyRemoteCover(img){
+  try{
+    var cur=window.localStorage.getItem(RK_COVER_KEY)||'';
+    if((img||'')!==cur){
+      if(img) window.localStorage.setItem(RK_COVER_KEY,img); else window.localStorage.removeItem(RK_COVER_KEY);
+      window.dispatchEvent(new Event('rk-cover-updated'));
+    }
+  }catch(e){}
+}
+// Baca file gambar -> kecilkan -> JPEG data URL. Disimpan di Firestore (1 dokումen, ditimpa),
+// jadi ukuran dijaga < ~500KB agar aman (batas dokumen Firestore ~1MB).
 function rkFileToCover(file,maxW){
   return new Promise(function(resolve,reject){
-    maxW=maxW||1000;
+    maxW=maxW||880;
     var fr=new FileReader();
     fr.onload=function(){
       var img=new Image();
@@ -846,7 +875,9 @@ function rkFileToCover(file,maxW){
           var w=Math.round(img.width*scale), hh=Math.round(img.height*scale);
           var cv=document.createElement('canvas'); cv.width=w; cv.height=hh;
           cv.getContext('2d').drawImage(img,0,0,w,hh);
-          resolve(cv.toDataURL('image/jpeg',0.82));
+          var q=0.72, url=cv.toDataURL('image/jpeg',q), guard=0;
+          while(url.length>500000 && q>0.4 && guard<6){ q-=0.1; url=cv.toDataURL('image/jpeg',q); guard++; }
+          resolve(url);
         }catch(e){ reject(e); }
       };
       img.onerror=reject; img.src=fr.result;
@@ -1412,10 +1443,11 @@ function rkAttachFirestore(FB,setState){
   var base=FB.doc(FB.db,'families',FB.familyId);
   var unsubs=[];
 
-  // dokumen family: settings.
+  // dokumen family: settings + foto sampul bersama.
   unsubs.push(FB.onSnapshot(base,function(snap){
     var d=(snap.exists&&snap.exists())?snap.data():null;
     if(d&&d.settings) setState(function(s){ return {...s,settings:{...s.settings,...d.settings}}; });
+    if(d) rkApplyRemoteCover(d.cover?d.cover:'');   // sinkron foto sampul ke cache lokal + notif UI
   }));
 
   // monthlyBudget (koleksi) -> map.
@@ -1678,6 +1710,9 @@ function App(){
   const [screen,setScreen]=useState('splash'); // splash|login|shell
   const [account,setAccount]=useState(null);
   const [fbReady,setFbReady]=useState(!!window.RKFB);
+  const [locked,setLocked]=useState(false);
+  const lockedRef=useRef(locked); lockedRef.current=locked;
+  const LOCK_MS=60*1000; // grace 1 menit
 
   useEffect(()=>{ document.body.setAttribute('data-theme',theme); },[theme]);
 
@@ -1701,7 +1736,6 @@ function App(){
         const members=(snap.exists&&snap.exists())?snap.data().members:null;
         if(members&&members[user.uid]) key=members[user.uid];
       }catch(e){}
-      // fallback: cocokkan dari email bila members tak terbaca.
       const acc=ACCOUNTS.find(a=>a.key===key)
              || ACCOUNTS.find(a=>a.email===user.email)
              || ACCOUNTS[0];
@@ -1709,6 +1743,30 @@ function App(){
     });
     return ()=>unsub&&unsub();
   },[fbReady]);
+
+  // Kunci layar bila sesi dipulihkan (reload/app dibunuh) setelah > 1 menit di latar belakang.
+  useEffect(()=>{
+    if(screen!=='shell'||!account) return;
+    try{ const last=parseInt(window.localStorage.getItem('rk_last_active')||'0',10);
+      if(last && (Date.now()-last)>LOCK_MS) setLocked(true);
+    }catch(e){}
+  },[screen,account]);
+
+  // Lacak aktivitas: catat saat app ke latar belakang; kunci saat kembali > 1 menit.
+  useEffect(()=>{
+    const mark=()=>{ try{ window.localStorage.setItem('rk_last_active',String(Date.now())); }catch(e){} };
+    const onVis=()=>{
+      if(document.visibilityState==='hidden'){ mark(); }
+      else{
+        try{ const last=parseInt(window.localStorage.getItem('rk_last_active')||'0',10);
+          if(account && last && (Date.now()-last)>LOCK_MS) setLocked(true); else mark();
+        }catch(e){}
+      }
+    };
+    document.addEventListener('visibilitychange',onVis);
+    const hb=setInterval(()=>{ if(document.visibilityState==='visible' && account && !lockedRef.current) mark(); },30000);
+    return ()=>{ document.removeEventListener('visibilitychange',onVis); clearInterval(hb); };
+  },[account]);
 
   // Splash hanya sampai Firebase siap menentukan status.
   useEffect(()=>{
@@ -1718,9 +1776,49 @@ function App(){
 
   if(screen==='splash') return h(Splash,null);
   if(screen==='login' || !account) return h(LoginFirebase,{fbReady});
+  if(locked) return h(LockScreen,{account,
+    onUnlock:()=>{ try{window.localStorage.setItem('rk_last_active',String(Date.now()));}catch(e){} setLocked(false); },
+    onLogout:()=>{ try{window.localStorage.removeItem('rk_last_active');}catch(e){} try{ window.RKFB&&window.RKFB.signOut(window.RKFB.auth); }catch(e){} setLocked(false); }});
   return h(Shell,{store,account,theme,setTheme,onLogout:()=>{
+    try{ window.localStorage.removeItem('rk_last_active'); }catch(e){}
     try{ window.RKFB&&window.RKFB.signOut(window.RKFB.auth); }catch(e){}
   }});
+}
+
+function LockScreen({account,onUnlock,onLogout}){
+  const [pw,setPw]=useState('');
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+  const submit=async()=>{
+    if(!window.RKFB){ setErr('Firebase belum siap.'); return; }
+    if(!pw){ setErr('Kata sandi belum diisi.'); return; }
+    setBusy(true); setErr('');
+    try{
+      const {auth,signInWithEmailAndPassword}=window.RKFB;
+      await signInWithEmailAndPassword(auth, account.email, pw);
+      onUnlock();
+    }catch(e){
+      const code=(e&&e.code)||'';
+      if(code.includes('wrong-password')||code.includes('invalid-credential')) setErr('Kata sandi salah.');
+      else if(code.includes('too-many-requests')) setErr('Terlalu banyak percobaan. Coba lagi nanti.');
+      else if(code.includes('network')) setErr('Tidak ada koneksi internet.');
+      else setErr('Gagal: '+code);
+      setBusy(false);
+    }
+  };
+  return h('div',{style:{minHeight:'100vh',padding:'40px 22px',display:'flex',flexDirection:'column',justifyContent:'center'},className:'fadein'},[
+    h('div',{key:'h',style:{textAlign:'center',marginBottom:24}},[
+      h('div',{key:'av',style:{display:'flex',justifyContent:'center',marginBottom:14}},
+        h('div',{style:{width:66,height:66,borderRadius:'50%',background:account.accent,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:27,fontWeight:800}},account.name[0])),
+      h('div',{key:'t',style:{fontSize:20,fontWeight:800}},'Selamat datang kembali'),
+      h('div',{key:'s',className:'muted',style:{marginTop:4}},`${account.name} · terkunci`),
+    ]),
+    h('input',{key:'i',className:'field',type:'password',value:pw,autoFocus:true,placeholder:'Kata sandi',
+      disabled:busy,onChange:e=>{setPw(e.target.value);setErr('');},onKeyDown:e=>{if(e.key==='Enter')submit();}}),
+    err?h('div',{key:'e',style:{color:C.expense,fontSize:12,marginTop:8}},err):null,
+    h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:16,padding:14,opacity:busy?.6:1},disabled:busy,onClick:submit}, busy?'Memproses…':'Buka'),
+    h('button',{key:'lo',className:'btn',style:{width:'100%',marginTop:10,background:'transparent',color:'var(--inkSoft)',border:'1px solid var(--line)'},onClick:onLogout},`Bukan ${account.name}? Keluar`),
+  ]);
 }
 
 function Splash(){
@@ -1745,6 +1843,7 @@ function LoginFirebase({fbReady}){
     try{
       const {auth,signInWithEmailAndPassword}=window.RKFB;
       await signInWithEmailAndPassword(auth, pwFor.email, pw);
+      try{ window.localStorage.setItem('rk_last_active',String(Date.now())); }catch(e){}
       // onAuthStateChanged di App akan otomatis pindah ke shell.
     }catch(e){
       const code=(e&&e.code)||'';
@@ -1787,10 +1886,12 @@ function LoginFirebase({fbReady}){
 
 /* ================= Shell (5 tab) ================= */
 var _rkBackProgrammatic=0; // jumlah popstate yang dipicu program (bukan tombol back), untuk diabaikan
+var _rkExiting=false;      // true saat pengguna memilih keluar app (agar popstate tidak menahannya)
 function Shell({store,account,theme,setTheme,onLogout}){
   const [tab,setTab]=useState(0);
   const [sheet,setSheet]=useState(null); // {type,props}
   const [overlay,setOverlay]=useState(null); // 'report'|'goal'|null
+  const [exitAsk,setExitAsk]=useState(false);
   const scrollRef=useRef();
   useEffect(()=>{ const el=document.getElementById('appScroll'); if(el)el.scrollTop=0; },[tab,overlay]);
 
@@ -1817,18 +1918,24 @@ function Shell({store,account,theme,setTheme,onLogout}){
 
   useEffect(()=>{
     const onPop=()=>{
+      if(_rkExiting){ return; }                       // sedang keluar → biarkan lewat
       if(_rkBackProgrammatic>0){ _rkBackProgrammatic--; return; }
       // Tombol back fisik: tutup lapisan teratas.
       if(sheetRef.current){ setSheet(null); depthRef.current=Math.max(0,depthRef.current-1); return; }
       if(overlayRef.current){ setOverlay(null); depthRef.current=Math.max(0,depthRef.current-1); return; }
-      // Tak ada lapisan → tahan agar PWA tidak tertutup: dorong ulang entri penjaga.
+      // Tak ada lapisan → tanya konfirmasi keluar, tetap tahan di app dulu.
       history.pushState({rkGuard:1},'');
+      setExitAsk(true);
     };
     // Entri penjaga awal supaya back pertama di Beranda tidak langsung keluar.
     history.pushState({rkGuard:1},'');
     window.addEventListener('popstate',onPop);
     return ()=>window.removeEventListener('popstate',onPop);
   },[]);
+  const doExit=()=>{ setExitAsk(false); _rkExiting=true;
+    try{ window.close(); }catch(e){}
+    setTimeout(function(){ try{ history.go(-(depthRef.current+3)); }catch(e){} },40);
+  };
 
   const openSheet=(type,props={})=>setSheet({type,props});
   const closeSheet=()=>setSheet(null);
@@ -1868,6 +1975,18 @@ function Shell({store,account,theme,setTheme,onLogout}){
           h('span',{key:'l'},t.label),
         ]))),
       document.getElementById('navHost')),
+    exitAsk?ReactDOM.createPortal(
+      h('div',{key:'exit',className:'fadein',style:{position:'fixed',inset:0,zIndex:120,background:'rgba(20,16,10,.5)',display:'flex',alignItems:'center',justifyContent:'center',padding:24},onClick:()=>setExitAsk(false)},
+        h('div',{style:{width:'100%',maxWidth:360,background:'var(--card)',borderRadius:20,padding:'22px 20px',boxShadow:'0 18px 50px rgba(0,0,0,.28)'},onClick:e=>e.stopPropagation()},[
+          h('div',{key:'ic',style:{width:52,height:52,borderRadius:14,background:C.maroon+'1a',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 14px'}},h(Icon,{name:'logout',size:24,color:C.maroon})),
+          h('div',{key:'t',style:{fontWeight:800,fontSize:18,textAlign:'center'}},'Keluar dari aplikasi?'),
+          h('div',{key:'s',className:'muted b-sm',style:{textAlign:'center',marginTop:6,lineHeight:1.5}},'Kamu akan menutup RumahKita. Sesi login tetap tersimpan (aman selama 1 menit).'),
+          h('div',{key:'btn',className:'row gap10',style:{marginTop:20}},[
+            h('button',{key:'c',className:'btn',style:{flex:1,background:'transparent',color:'var(--ink)',border:'1px solid var(--line)',padding:13},onClick:()=>setExitAsk(false)},'Batal'),
+            h('button',{key:'x',className:'btn',style:{flex:1,background:C.maroon,color:'#fff',padding:13},onClick:doExit},'Keluar'),
+          ]),
+        ])),
+      document.getElementById('navHost')):null,
   ]);
 }
 
@@ -3457,11 +3576,11 @@ function CoverSheet({ctx}){
   const onFile=async(e)=>{
     const f=e.target.files&&e.target.files[0]; if(!f) return;
     setBusy(true);
-    try{ const url=await rkFileToCover(f,1000); rkSetCover(url); setCover(url); toast('Foto sampul diperbarui'); }
+    try{ const url=await rkFileToCover(f,880); rkSetCover(url); rkWriteCover(url); setCover(url); toast('Foto sampul diperbarui'); }
     catch(err){ toast('Gagal memuat foto'); }
     setBusy(false); e.target.value='';
   };
-  const removePhoto=()=>{ rkSetCover(''); setCover(''); toast('Foto sampul dihapus'); };
+  const removePhoto=()=>{ rkSetCover(''); rkDeleteCover(); setCover(''); toast('Foto sampul dihapus'); };
   const useMyLoc=async()=>{
     setBusy(true);
     const wx=await rkFetchWeather(true);
@@ -3486,7 +3605,7 @@ function CoverSheet({ctx}){
     h('label',{key:'ll',className:'label'},'Lokasi (tampil di beranda)'),
     h('input',{key:'li',className:'field',value:loc,placeholder:'mis. Jaten, Jawa Tengah',onChange:e=>setLoc(e.target.value)}),
     h('button',{key:'geo',className:'btn btn-ghost',style:{width:'100%',padding:11,marginTop:10},onClick:useMyLoc,disabled:busy},[h(Icon,{name:'location',size:16}),'Gunakan lokasi saya']),
-    h('div',{key:'note',className:'b-xs muted',style:{marginTop:12,lineHeight:1.5}},'Foto disimpan di perangkat ini saja (tak ikut tersinkron). Lokasi tersinkron ke keluarga.'),
+    h('div',{key:'note',className:'b-xs muted',style:{marginTop:12,lineHeight:1.5}},'Foto tersimpan di Firebase (satu file, ditimpa saat diganti) sehingga kamu & pasangan melihat foto yang sama. Lokasi juga tersinkron.'),
     h('button',{key:'save',className:'btn btn-gold',style:{width:'100%',padding:14,marginTop:14},onClick:save},'Simpan'),
   ]);
 }

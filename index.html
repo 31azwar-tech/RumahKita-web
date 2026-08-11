@@ -749,8 +749,13 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.11';
+const APP_VERSION='1.12';
 const CHANGELOG=[
+  {v:'1.12', date:'11 Agu 2026', items:[
+    'Buka kunci pakai PIN kini tampil papan angka (numerik), bukan keyboard penuh.',
+    'PIN lebih andal tersimpan (ada cadangan bila enkripsi perangkat tak tersedia).',
+    'Web: keluar aplikasi kembali "tekan back 2×" (popup keluar disiapkan untuk APK Android).',
+  ]},
   {v:'1.11', date:'11 Agu 2026', items:[
     'PIN buka kunci (offline) — tak perlu internet untuk masuk kembali.',
     'Durasi kunci layar bisa diatur: 30 detik / 1 menit / 5 menit.',
@@ -868,17 +873,23 @@ function rkApplyRemoteCover(img){
   }catch(e){}
 }
 
-// ---- PIN kunci layar (offline, di-hash SHA-256, disimpan per perangkat) ----
+// ---- PIN kunci layar (offline, disimpan per perangkat) ----
 var RK_PIN_KEY='rk_pin_hash_v1';
 function rkHasPin(){ try{ return !!window.localStorage.getItem(RK_PIN_KEY); }catch(e){ return false; } }
+function rkPinFallbackHash(pin){ var s='RumahKita:'+String(pin), hh=5381; for(var i=0;i<s.length;i++){ hh=((hh<<5)+hh)+s.charCodeAt(i); hh=hh>>>0; } return 'fb'+hh.toString(16); }
 async function rkHashPin(pin){
-  var data=new TextEncoder().encode('RumahKita:'+pin);
-  var buf=await crypto.subtle.digest('SHA-256',data);
-  return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+  try{
+    if(typeof crypto!=='undefined' && crypto.subtle && typeof TextEncoder!=='undefined'){
+      var data=new TextEncoder().encode('RumahKita:'+pin);
+      var buf=await crypto.subtle.digest('SHA-256',data);
+      return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+    }
+  }catch(e){}
+  return rkPinFallbackHash(pin);   // konteks non-aman / SDK tak lengkap → tetap jalan
 }
-async function rkSetPin(pin){ try{ var hh=await rkHashPin(pin); window.localStorage.setItem(RK_PIN_KEY,hh); return true; }catch(e){ return false; } }
+async function rkSetPin(pin){ try{ var hh=await rkHashPin(pin); if(!hh) return false; window.localStorage.setItem(RK_PIN_KEY,hh); return window.localStorage.getItem(RK_PIN_KEY)===hh; }catch(e){ return false; } }
 function rkClearPin(){ try{ window.localStorage.removeItem(RK_PIN_KEY); }catch(e){} }
-async function rkVerifyPin(pin){ try{ var hh=await rkHashPin(pin); return hh===window.localStorage.getItem(RK_PIN_KEY); }catch(e){ return false; } }
+async function rkVerifyPin(pin){ try{ var hh=await rkHashPin(pin); var cur=window.localStorage.getItem(RK_PIN_KEY); return !!cur && (hh===cur || rkPinFallbackHash(pin)===cur); }catch(e){ return false; } }
 // Baca file gambar -> kecilkan -> JPEG data URL. Disimpan di Firestore (1 dokումen, ditimpa),
 // jadi ukuran dijaga < ~500KB agar aman (batas dokumen Firestore ~1MB).
 function rkFileToCover(file,maxW){
@@ -1930,6 +1941,9 @@ function LoginFirebase({fbReady}){
 /* ================= Shell (5 tab) ================= */
 var _rkBackProgrammatic=0; // jumlah popstate yang dipicu program (bukan tombol back), untuk diabaikan
 var _rkExiting=false;      // true saat pengguna memilih keluar app (agar popstate tidak menahannya)
+var RK_USE_EXIT_POPUP=false; // web: false (2x back). Saat build APK Android, set true utk popup konfirmasi keluar.
+var _rkBackArmed=false;    // sudah tekan back sekali (menunggu tekan kedua utk keluar)
+var _rkBackTimer=null;
 function Shell({store,account,theme,setTheme,onLogout}){
   const [tab,setTab]=useState(0);
   const [sheet,setSheet]=useState(null); // {type,props}
@@ -1967,9 +1981,21 @@ function Shell({store,account,theme,setTheme,onLogout}){
       // Tombol back fisik: tutup lapisan teratas.
       if(sheetRef.current){ setSheet(null); depthRef.current=Math.max(0,depthRef.current-1); return; }
       if(overlayRef.current){ setOverlay(null); depthRef.current=Math.max(0,depthRef.current-1); return; }
-      // Tak ada lapisan → tanya konfirmasi keluar, tetap tahan di app dulu.
-      history.pushState({rkGuard:1},'');
-      setExitAsk(true);
+      // Tak ada lapisan (di Beranda):
+      if(RK_USE_EXIT_POPUP){
+        // Mode APK (nanti): tampilkan popup konfirmasi keluar.
+        history.pushState({rkGuard:1},''); setExitAsk(true); return;
+      }
+      // Mode web: tekan back 2x untuk keluar (seperti versi sebelumnya).
+      if(_rkBackArmed){
+        _rkBackArmed=false; _rkExiting=true;
+        try{ window.close(); }catch(e){}
+        try{ history.back(); }catch(e){}               // TWA/standalone: menutup di entri awal
+        return;
+      }
+      _rkBackArmed=true; toast('Tekan sekali lagi untuk keluar');
+      clearTimeout(_rkBackTimer); _rkBackTimer=setTimeout(function(){ _rkBackArmed=false; },2000);
+      history.pushState({rkGuard:1},'');               // tetap di app, tunggu back kedua
     };
     // Entri penjaga awal supaya back pertama di Beranda tidak langsung keluar.
     history.pushState({rkGuard:1},'');
@@ -3637,7 +3663,9 @@ function SecuritySheet({ctx}){
   const savePin=async()=>{
     if(p1.length<4){ setErr('PIN minimal 4 digit.'); return; }
     if(p1!==p2){ setErr('PIN tidak sama.'); return; }
-    await rkSetPin(p1); setHasPin(true); setEditing(false); setP1(''); setP2(''); setErr(''); toast('PIN tersimpan');
+    const okp=await rkSetPin(p1);
+    if(!okp || !rkHasPin()){ setErr('Gagal menyimpan PIN. Coba lagi.'); return; }
+    setHasPin(true); setEditing(false); setP1(''); setP2(''); setErr(''); toast('PIN tersimpan');
   };
   const removePin=()=>ctx.confirm({title:'Hapus PIN?',message:'Buka kunci akan kembali memakai kata sandi (butuh internet).',danger:true,confirmLabel:'Hapus',onConfirm:()=>{ rkClearPin(); setHasPin(false); toast('PIN dihapus'); }});
   return h('div',null,[

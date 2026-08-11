@@ -749,8 +749,12 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.12';
+const APP_VERSION='1.13';
 const CHANGELOG=[
+  {v:'1.13', date:'11 Agu 2026', items:[
+    'Kolom kata sandi login memakai papan angka (numerik).',
+    'Tombol mata (tampil/sembunyi) di pojok kanan kolom kata sandi.',
+  ]},
   {v:'1.12', date:'11 Agu 2026', items:[
     'Buka kunci pakai PIN kini tampil papan angka (numerik), bukan keyboard penuh.',
     'PIN lebih andal tersimpan (ada cadangan bila enkripsi perangkat tak tersedia).',
@@ -1271,6 +1275,7 @@ function Icon({name,size=22,color='currentColor',fill='none',stroke=2}){
     users:'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
     user:'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
     eye:'M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+    eyeoff:'M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24M1 1l22 22',
     logout:'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
     moon:'M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z',
     trash:'M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14H6L5 6',
@@ -1865,8 +1870,8 @@ function LockScreen({account,onUnlock,onLogout}){
       h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:14,padding:14,opacity:busy?.6:1},disabled:busy,onClick:()=>submitPin()},busy?'Memeriksa…':'Buka'),
       h('button',{key:'pw',className:'btn',style:{width:'100%',marginTop:10,background:'transparent',color:'var(--inkSoft)'},onClick:()=>{setMode('pw');setErr('');}},'Gunakan kata sandi'),
     ]) : h('div',{key:'pw'},[
-      h('input',{key:'i',className:'field',type:'password',autoFocus:true,value:pw,placeholder:'Kata sandi',
-        disabled:busy,onChange:e=>{setPw(e.target.value);setErr('');},onKeyDown:e=>{if(e.key==='Enter')submitPw();}}),
+      h(PasswordField,{key:'i',value:pw,numeric:true,autoFocus:true,disabled:busy,placeholder:'Kata sandi',
+        onChange:v=>{setPw(v);setErr('');}, onEnter:submitPw}),
       err?h('div',{key:'e',style:{color:C.expense,fontSize:12,marginTop:8}},err):null,
       h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:14,padding:14,opacity:busy?.6:1},disabled:busy,onClick:submitPw},busy?'Memproses…':'Buka'),
       hasPin?h('button',{key:'pin',className:'btn',style:{width:'100%',marginTop:10,background:'transparent',color:'var(--inkSoft)'},onClick:()=>{setMode('pin');setErr('');}},'Gunakan PIN'):null,
@@ -1882,6 +1887,23 @@ function Splash(){
       h('div',{key:'1',style:{fontSize:26,fontWeight:800}},'RumahKita'),
       h('div',{key:'2',style:{color:C.gold,fontWeight:600,letterSpacing:1.2,fontSize:13,marginTop:2}},'ANCHOR OF SERENITY'),
     ]),
+  ]);
+}
+
+// Kolom kata sandi: keypad angka (opsional) + tombol mata show/hide di pojok kanan.
+function PasswordField({value,onChange,onEnter,placeholder,numeric,autoFocus,disabled,style}){
+  const [show,setShow]=useState(false);
+  return h('div',{style:{position:'relative',...(style||{})}},[
+    h('input',{key:'i',className:'field',type:show?'text':'password',
+      inputMode:numeric?'numeric':'text', autoComplete:'off',
+      value:value, autoFocus:autoFocus, disabled:disabled, placeholder:placeholder,
+      style:{paddingRight:46},
+      onChange:e=>onChange(e.target.value),
+      onKeyDown:e=>{ if(e.key==='Enter'&&onEnter) onEnter(); }}),
+    h('button',{key:'e',type:'button',tabIndex:-1,'aria-label':show?'Sembunyikan kata sandi':'Tampilkan kata sandi',
+      onClick:()=>setShow(v=>!v),
+      style:{position:'absolute',right:8,top:0,bottom:0,margin:'auto',height:36,width:36,display:'flex',alignItems:'center',justifyContent:'center',background:'transparent',border:'none',cursor:'pointer',padding:0}},
+      h(Icon,{name:show?'eyeoff':'eye',size:19,color:show?C.teal:'var(--inkSoft)'})),
   ]);
 }
 
@@ -1929,8 +1951,8 @@ function LoginFirebase({fbReady}){
     pwFor?h(Sheet,{key:'sh',open:true,onClose:()=>{if(!busy)setPwFor(null);}},[
       h('div',{key:'t',style:{fontWeight:800,fontSize:18,marginBottom:4}},`Masuk sebagai ${pwFor.name}`),
       h('div',{key:'s',className:'muted b-sm',style:{marginBottom:16}},pwFor.email),
-      h('input',{key:'i',className:'field',type:'password',value:pw,autoFocus:true,placeholder:'Kata sandi',
-        disabled:busy,onChange:e=>{setPw(e.target.value);setErr('');},onKeyDown:e=>{if(e.key==='Enter')submit();}}),
+      h(PasswordField,{key:'i',value:pw,numeric:true,autoFocus:true,disabled:busy,placeholder:'Kata sandi',
+        onChange:v=>{setPw(v);setErr('');}, onEnter:submit}),
       err?h('div',{key:'e',style:{color:C.expense,fontSize:12,marginTop:8}},err):null,
       h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:16,padding:14,opacity:busy?.6:1},
         disabled:busy,onClick:submit}, busy?'Memproses…':'Masuk'),
@@ -3510,10 +3532,10 @@ function ChangePwSheet({ctx}){
   return h('div',null,[
     h('div',{key:'t',style:{fontWeight:800,fontSize:18,marginBottom:4}},'Ubah kata sandi'),
     h('div',{key:'s',className:'muted b-sm',style:{marginBottom:16}},'Masukkan kata sandi baru (min. 6 karakter).'),
-    h('input',{key:'i1',className:'field',type:'password',value:pw,placeholder:'Kata sandi baru',autoFocus:true,
-      disabled:busy,onChange:e=>{setPw(e.target.value);setErr('');}}),
-    h('input',{key:'i2',className:'field',type:'password',value:pw2,placeholder:'Ulangi kata sandi',style:{marginTop:10},
-      disabled:busy,onChange:e=>{setPw2(e.target.value);setErr('');},onKeyDown:e=>{if(e.key==='Enter')submit();}}),
+    h(PasswordField,{key:'i1',value:pw,autoFocus:true,disabled:busy,placeholder:'Kata sandi baru',
+      onChange:v=>{setPw(v);setErr('');}}),
+    h(PasswordField,{key:'i2',value:pw2,disabled:busy,placeholder:'Ulangi kata sandi',style:{marginTop:10},
+      onChange:v=>{setPw2(v);setErr('');}, onEnter:submit}),
     err?h('div',{key:'e',style:{color:C.expense,fontSize:12,marginTop:8}},err):null,
     h('button',{key:'b',className:'btn btn-gold',style:{width:'100%',marginTop:16,padding:14,opacity:busy?.6:1},
       disabled:busy,onClick:submit},busy?'Menyimpan…':'Simpan'),

@@ -749,8 +749,14 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.13';
+const APP_VERSION='1.14';
 const CHANGELOG=[
+  {v:'1.14', date:'12 Agu 2026', items:[
+    'Tambah Plan kini punya kolom "Budget bulan ini" — isi sendiri batas belanja bulan target (default Rp 0).',
+    'Budget & Plan jadi angka terpisah: Budget = yang kamu set manual, Plan = total item rencana bulan itu.',
+    'Ganti bulan target otomatis menampilkan budget terakhir bulan tsb; angka baru menimpa yang lama.',
+    'Baru: Log Aktivitas di Setting — lihat seluruh riwayat tambah / ubah / hapus data (tersinkron 2 perangkat).',
+  ]},
   {v:'1.13', date:'11 Agu 2026', items:[
     'Kolom kata sandi login memakai papan angka (numerik).',
     'Tombol mata (tampil/sembunyi) di pojok kanan kolom kata sandi.',
@@ -1370,6 +1376,8 @@ function rkDefaultState(){
     reflections:seedReflections(),
     // traveling
     trips:seedTrips(),
+    // riwayat aktivitas
+    activityLog:[],
     // pengaturan
     settings:{paydayDefault:28,periodOverrides:{},
       notif:{enabled:false,events:true,maintenance:true},
@@ -1401,9 +1409,9 @@ function rkLoadState(){
 /* ================= FIRESTORE (Bagian 8: baca + seeding) ================= */
 // Koleksi yang disimpan sebagai sub-collection di families/{familyId}.
 var RK_COLLECTIONS=['categories','transactions','matrixItems','goals',
-  'eventCats','events','maintenance','journal','reflections','trips'];
+  'eventCats','events','maintenance','journal','reflections','trips','activityLog'];
 // Field berttipe tanggal per record (untuk konversi Timestamp <-> Date).
-var RK_DATE_FIELDS=['date','last','start','end','deadline'];
+var RK_DATE_FIELDS=['date','last','start','end','deadline','at'];
 
 // Timestamp Firestore -> Date JS (REKURSIF PENUH: menembus array & objek nested,
 // mis. trips.segments[].date. Versi lama hanya mengonversi field level-atas, sehingga
@@ -1528,6 +1536,10 @@ function rkWriteSettings(settings){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
   try{ FB.setDoc(base, {settings:settings}, {merge:true}); }catch(e){}
 }
+function rkWriteActivity(rec){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  try{ FB.setDoc(FB.doc(base,'activityLog',rec.id), rkObjToDoc(FB,rec)); }catch(e){}
+}
 
 function useStore(){
   const [state,setState]=useState(rkLoadState);
@@ -1564,38 +1576,62 @@ function useStore(){
     return function(){ alive=false; if(offAuth)offAuth(); if(detach)detach(); };
   },[]);
 
-  return {state,
+  const logActivity=(action,entity,label,by)=>{
+    const id=newId('al');
+    const actor=by||(window.__rkActiveAccount&&window.__rkActiveAccount.key)||'azwar';
+    const rec={id,action,entity,label:label||'',by:actor,at:new Date()};
+    rkWriteActivity(rec);
+    up(s=>{
+      const next=[rec,...(s.activityLog||[])];
+      // pangkas: simpan maksimal 300 entri di memori (Firestore tetap lengkap)
+      return {activityLog: next.slice(0,300)};
+    });
+  };
+  return {state, logActivity,
     // transaksi
     addTx:tx=>{ const id=newId('t'); const rec={...tx,id}; rkWriteDoc('transactions',id,rec);
+      logActivity('add','tx',tx.note||(tx.categoryId?('Transaksi '+tx.categoryId):'Transaksi')+' · '+rupiah(tx.amount||0),tx.by);
       up(s=>({transactions:[rec,...s.transactions]})); },
     updateTx:tx=>{ rkWriteDoc('transactions',tx.id,tx);
+      logActivity('edit','tx',(tx.note||'Transaksi')+' · '+rupiah(tx.amount||0),tx.by);
       up(s=>({transactions:s.transactions.map(t=>t.id===tx.id?tx:t)})); },
-    deleteTx:id=>{ rkDeleteDoc('transactions',id);
+    deleteTx:id=>{ const old=state.transactions.find(t=>t.id===id); rkDeleteDoc('transactions',id);
+      logActivity('delete','tx',old?((old.note||'Transaksi')+' · '+rupiah(old.amount||0)):'Transaksi');
       up(s=>({transactions:s.transactions.filter(t=>t.id!==id)})); },
     // kategori
     addCat:c=>{ const id=newId('c'); const rec={...c,id}; rkWriteDoc('categories',id,rec);
+      logActivity('add','cat',c.name);
       up(s=>({categories:[...s.categories,rec]})); },
     addCatRaw:rec=>{ rkWriteDoc('categories',rec.id,rec);
       up(s=>(s.categories.some(x=>x.id===rec.id)?{}:{categories:[...s.categories,rec]})); },
     updateCat:c=>{ rkWriteDoc('categories',c.id,c);
+      logActivity('edit','cat',c.name);
       up(s=>({categories:s.categories.map(x=>x.id===c.id?c:x)})); },
-    deleteCat:id=>{ rkDeleteDoc('categories',id);
+    deleteCat:id=>{ const old=state.categories.find(c=>c.id===id); rkDeleteDoc('categories',id);
+      logActivity('delete','cat',old?old.name:'Kategori');
       up(s=>({categories:s.categories.filter(c=>c.id!==id)})); },
     // matrix
     addMatrix:m=>{ const id=newId('m'); const rec={...m,id}; rkWriteDoc('matrixItems',id,rec);
+      logActivity('add','plan',(m.title||'Plan')+' · '+rupiah(m.amount||0),m.by);
       up(s=>({matrixItems:[...s.matrixItems,rec]})); },
     updateMatrix:m=>{ rkWriteDoc('matrixItems',m.id,m);
+      logActivity('edit','plan',(m.title||'Plan')+' · '+rupiah(m.amount||0),m.by);
       up(s=>({matrixItems:s.matrixItems.map(x=>x.id===m.id?m:x)})); },
-    deleteMatrix:id=>{ rkDeleteDoc('matrixItems',id);
+    deleteMatrix:id=>{ const old=state.matrixItems.find(m=>m.id===id); rkDeleteDoc('matrixItems',id);
+      logActivity('delete','plan',old?((old.title||'Plan')+' · '+rupiah(old.amount||0)):'Plan');
       up(s=>({matrixItems:s.matrixItems.filter(m=>m.id!==id)})); },
     setBudget:(k,amt)=>{ rkWriteBudget(k,amt);
+      logActivity('budget','budget','Budget '+k+' → '+rupiah(amt));
       up(s=>({monthlyBudget:{...s.monthlyBudget,[k]:amt}})); },
     // goals
     addGoal:g=>{ const id=newId('g'); const rec={...g,id}; rkWriteDoc('goals',id,rec);
+      logActivity('add','goal',g.title||g.name||'Goal');
       up(s=>({goals:[...s.goals,rec]})); },
     updateGoal:g=>{ rkWriteDoc('goals',g.id,g);
+      logActivity('edit','goal',g.title||g.name||'Goal');
       up(s=>({goals:s.goals.map(x=>x.id===g.id?g:x)})); },
-    deleteGoal:id=>{ rkDeleteDoc('goals',id);
+    deleteGoal:id=>{ const old=state.goals.find(g=>g.id===id); rkDeleteDoc('goals',id);
+      logActivity('delete','goal',old?(old.title||old.name||'Goal'):'Goal');
       up(s=>({goals:s.goals.filter(g=>g.id!==id)})); },
     addSaving:(id,amt)=>up(s=>{ const g=s.goals.find(x=>x.id===id);
       if(g){ const ng={...g,saved:g.saved+amt}; rkWriteDoc('goals',id,ng); }
@@ -1613,6 +1649,7 @@ function useStore(){
         mItem=linkedMatrix(mid,ev.title,e.biaya,ev.date,'event',id); }
       rkWriteDoc('events',id,ev);
       if(mItem) rkWriteDoc('matrixItems',mItem.id,mItem);
+      logActivity('add','event',e.title||'Acara',e.by);
       up(s=>({events:[...s.events,ev],
               matrixItems:mItem?[...s.matrixItems,mItem]:s.matrixItems}));
     },
@@ -1634,6 +1671,7 @@ function useStore(){
     }),
     deleteEvent:id=>up(s=>{ const ev=s.events.find(x=>x.id===id);
       rkDeleteDoc('events',id);
+      logActivity('delete','event',ev?(ev.title||'Acara'):'Acara');
       if(ev&&ev.matrixId) rkDeleteDoc('matrixItems',ev.matrixId);
       return {events:s.events.filter(x=>x.id!==id),
               matrixItems:ev&&ev.matrixId?s.matrixItems.filter(m=>m.id!==ev.matrixId):s.matrixItems}; }),
@@ -1648,6 +1686,7 @@ function useStore(){
         mItem=linkedMatrix(mid,mt.name,m.biaya,due,'maint',id); }
       rkWriteDoc('maintenance',id,mt);
       if(mItem) rkWriteDoc('matrixItems',mItem.id,mItem);
+      logActivity('add','maint',m.name||'Perawatan',m.by);
       return {maintenance:[...s.maintenance,mt],
               matrixItems:mItem?[...s.matrixItems,mItem]:s.matrixItems};
     }),
@@ -1669,6 +1708,7 @@ function useStore(){
     }),
     deleteMaint:id=>up(s=>{ const mt=s.maintenance.find(x=>x.id===id);
       rkDeleteDoc('maintenance',id);
+      logActivity('delete','maint',mt?(mt.name||'Perawatan'):'Perawatan');
       if(mt&&mt.matrixId) rkDeleteDoc('matrixItems',mt.matrixId);
       return {maintenance:s.maintenance.filter(x=>x.id!==id),
               matrixItems:mt&&mt.matrixId?s.matrixItems.filter(m=>m.id!==mt.matrixId):s.matrixItems}; }),
@@ -1680,8 +1720,10 @@ function useStore(){
       return {maintenance:s.maintenance.map(x=>x.id===id?{...x,last:new Date(today.getFullYear(),today.getMonth(),today.getDate()),done:false}:x)}; }),
     // journal
     addJournal:j=>{ const id=newId('j'); const rec={...j,id}; rkWriteDoc('journal',id,rec);
+      logActivity('add','journal',(j.title||j.text||'Catatan jurnal').slice(0,40),j.by);
       up(s=>({journal:[rec,...s.journal]})); },
-    deleteJournal:id=>{ rkDeleteDoc('journal',id);
+    deleteJournal:id=>{ const old=state.journal.find(x=>x.id===id); rkDeleteDoc('journal',id);
+      logActivity('delete','journal',old?((old.title||old.text||'Catatan jurnal').slice(0,40)):'Catatan jurnal');
       up(s=>({journal:s.journal.filter(x=>x.id!==id)})); },
     // reflections
     answerReflection:(id,by,ans)=>up(s=>{ const r=s.reflections.find(x=>x.id===id);
@@ -1713,10 +1755,12 @@ function useStore(){
       if(writeMatrix) rkWriteDoc('matrixItems',writeMatrix.id,writeMatrix);
       if(delMatrixId) rkDeleteDoc('matrixItems',delMatrixId);
       const exists=s.trips.some(x=>x.id===rec.id);
+      logActivity(exists?'edit':'add','trip',t.dest||'Trip',t.by);
       return {trips: exists? s.trips.map(x=>x.id===rec.id?rec:x) : [rec,...s.trips], matrixItems};
     }),
     deleteTripFull:id=>up(s=>{ const t=s.trips.find(x=>x.id===id);
       rkDeleteDoc('trips',id);
+      logActivity('delete','trip',t?(t.dest||'Trip'):'Trip');
       if(t&&t.matrixId) rkDeleteDoc('matrixItems',t.matrixId);
       return {trips:s.trips.filter(x=>x.id!==id),
               matrixItems:t&&t.matrixId?s.matrixItems.filter(m=>m.id!==t.matrixId):s.matrixItems}; }),
@@ -1774,6 +1818,7 @@ function App(){
       const acc=ACCOUNTS.find(a=>a.key===key)
              || ACCOUNTS.find(a=>a.email===user.email)
              || ACCOUNTS[0];
+      window.__rkActiveAccount=acc;
       setAccount(acc); setScreen('shell');
     });
     return ()=>unsub&&unsub();
@@ -2051,6 +2096,7 @@ function Shell({store,account,theme,setTheme,onLogout}){
   else if(overlay==='ai') body=h(AssistantScreen,{ctx});
   else if(overlay==='trip') body=h(TripScreen,{ctx});
   else if(overlay==='changelog') body=h(ChangelogScreen,{ctx});
+  else if(overlay==='activity') body=h(ActivityLogScreen,{ctx});
   else body=[
     h(HomeScreen,{ctx}), h(BudgetScreen,{ctx}), h(ScheduleScreen,{ctx}),
     h(MatrixScreen,{ctx}), h(SettingScreen,{ctx}),
@@ -2670,15 +2716,20 @@ function PlanSheet({ctx,edit}){
   const [amount,setAmount]=useState(edit?edit.amount:0);
   const [quadrant,setQuadrant]=useState(edit?edit.quadrant:'p');
   const now=edit?new Date(edit.year,edit.month-1,1):new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),1);
-  const [ym,setYm]=useState(monthKey(now));
+  const initYm=monthKey(now);
+  const [ym,setYm]=useState(initYm);
   const [by,setBy]=useState(edit?edit.by:account.key);
+  // Budget bulan target — angka manual (last-write-wins). Default 0 bila belum diset.
+  const budgetOf=k=>(store.state.monthlyBudget[k]!=null?store.state.monthlyBudget[k]:0);
+  const [budget,setBudget]=useState(budgetOf(initYm));
+  // saat ganti bulan target → tampilkan budget terakhir yg tersimpan utk bulan itu.
+  const onYmChange=nk=>{ setYm(nk); setBudget(budgetOf(nk)); };
   const save=()=>{ if(!title||amount<=0){toast('Lengkapi judul & harga');return;}
     const [y,m]=ym.split('-').map(Number);
     const item={id:edit?edit.id:'',title,amount,quadrant,year:y,month:m,done:edit?edit.done:false,by};
     if(edit)store.updateMatrix(item); else store.addMatrix(item);
-    // update monthly budget (last-write-wins) = jumlah plan bulan itu
-    const total=store.state.matrixItems.filter(x=>x.year===y&&x.month===m&&x.id!==(edit?edit.id:'')).reduce((a,x)=>a+x.amount,0)+amount;
-    store.setBudget(ym,total);
+    // Budget bulan = angka manual (menimpa nilai lama). Hanya utk tampilan Matrix.
+    store.setBudget(ym,budget||0);
     closeSheet(); toast(edit?'Plan diperbarui':'Plan ditambahkan ke Matrix');
   };
   return h('div',null,[
@@ -2692,7 +2743,10 @@ function PlanSheet({ctx,edit}){
     h('div',{key:'q',className:'row wrap gap8',style:{marginBottom:14}}, Object.entries(QUAD).map(([k,v])=>
       h('button',{key:k,className:'selopt',style:quadrant===k?{borderColor:v.color,background:v.color+'1a',color:v.color}:null,onClick:()=>setQuadrant(k)},v.label))),
     h('label',{key:'l4',className:'label'},'Bulan target'),
-    h('input',{key:'ym',className:'field',type:'month',style:{marginBottom:14},value:ym,onChange:e=>setYm(e.target.value)}),
+    h('input',{key:'ym',className:'field',type:'month',style:{marginBottom:14},value:ym,onChange:e=>onYmChange(e.target.value)}),
+    h('label',{key:'l4b',className:'label'},'Budget bulan ini'),
+    h('div',{key:'bg',style:{marginBottom:6}},h(MoneyInput,{value:budget,onChange:setBudget})),
+    h('div',{key:'bgn',className:'b-xs muted',style:{marginBottom:14,lineHeight:1.5}},'Batas belanja bulan target (hanya tampilan Matrix, tak memengaruhi kalkulasi Anggaran). Angka baru menimpa yang lama.'),
     h('label',{key:'l5',className:'label'},'Dibuat oleh'),
     h('div',{key:'by',style:{marginBottom:18}},h(AccountToggle,{value:by,onChange:setBy})),
     h('button',{key:'s',className:'btn btn-teal',style:{width:'100%',padding:14},onClick:save},edit?'Simpan':'Tambah Plan'),
@@ -3627,6 +3681,72 @@ function ChangelogScreen({ctx}){
   ]);
 }
 
+/* ---- Log Aktivitas (riwayat tambah/ubah/hapus) ---- */
+const ACT_META={
+  add:   {label:'Tambah', color:C.income,   icon:'plus'},
+  edit:  {label:'Ubah',   color:C.goldDark, icon:'settings'},
+  delete:{label:'Hapus',  color:C.maroon,   icon:'trash'},
+  budget:{label:'Budget', color:C.teal,     icon:'wallet'},
+};
+const ENTITY_LABEL={tx:'Transaksi',cat:'Kategori',plan:'Plan',budget:'Budget',goal:'Goal',event:'Acara',maint:'Perawatan',journal:'Jurnal',trip:'Trip'};
+function actWhen(d){
+  const now=new Date();
+  const sameDay=d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()===now.getDate();
+  const y=new Date(now.getFullYear(),now.getMonth(),now.getDate()-1);
+  const isYest=d.getFullYear()===y.getFullYear()&&d.getMonth()===y.getMonth()&&d.getDate()===y.getDate();
+  const jam=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  if(sameDay) return 'Hari ini · '+jam;
+  if(isYest) return 'Kemarin · '+jam;
+  return `${d.getDate()} ${BULAN_SG[d.getMonth()]} ${d.getFullYear()} · ${jam}`;
+}
+function ActivityLogScreen({ctx}){
+  const {store,setOverlay}=ctx; const s=store.state;
+  const [filter,setFilter]=useState('all'); // all|add|edit|delete
+  const all=(s.activityLog||[]).slice().sort((a,b)=>asDate(b.at)-asDate(a.at));
+  const list=all.filter(a=>{
+    if(filter==='all') return true;
+    if(filter==='delete') return a.action==='delete';
+    if(filter==='add') return a.action==='add';
+    if(filter==='edit') return a.action==='edit'||a.action==='budget';
+    return true;
+  });
+  const FILTERS=[['all','Semua'],['add','Tambah'],['edit','Ubah'],['delete','Hapus']];
+  return h('div',{style:{paddingBottom:40},className:'fadein'},[
+    h(OverlayHeader,{key:'h',title:'Log Aktivitas',onBack:()=>setOverlay(null)}),
+    h('div',{key:'bd',style:{padding:'8px 18px 0'}},[
+      h('div',{key:'note',className:'b-sm muted',style:{marginBottom:12,lineHeight:1.5}},'Riwayat perubahan data oleh kamu & pasangan. Tersinkron antar-perangkat.'),
+      // filter chips
+      h('div',{key:'f',className:'row gap8',style:{marginBottom:14,flexWrap:'wrap'}}, FILTERS.map(([k,lbl])=>
+        h('button',{key:k,className:'selopt',style:filter===k?{borderColor:C.teal,background:C.teal+'1a',color:C.teal,fontWeight:700}:{fontWeight:600},onClick:()=>setFilter(k)},lbl))),
+      list.length===0
+        ? h(Card,{key:'empty',style:{textAlign:'center',padding:'28px 18px'}},[
+            h('div',{key:'i',style:{fontSize:32,marginBottom:8}},'🗒️'),
+            h('div',{key:'t',className:'b-sm muted'},'Belum ada aktivitas tercatat.'),
+          ])
+        : h('div',{key:'lst'}, list.map((a,i)=>{
+            const meta=ACT_META[a.action]||ACT_META.edit;
+            const acc=accountByKey(a.by)||{name:a.by||'—',accent:C.inkSoft};
+            const ent=ENTITY_LABEL[a.entity]||a.entity||'';
+            return h(Card,{key:a.id||i,style:{marginBottom:10}},h('div',{className:'row gap12',style:{alignItems:'flex-start'}},[
+              h('span',{key:'ic',style:{width:34,height:34,borderRadius:10,background:meta.color+'1a',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},
+                h(Icon,{name:meta.icon,size:18,color:meta.color})),
+              h('div',{key:'m',className:'grow',style:{minWidth:0}},[
+                h('div',{key:'r1',className:'row gap6',style:{alignItems:'center',marginBottom:2,flexWrap:'wrap'}},[
+                  h('span',{key:'a',style:{fontWeight:700,fontSize:13,color:meta.color}},meta.label),
+                  h('span',{key:'e',className:'chip',style:{background:'var(--line)',color:'var(--inkSoft)',fontWeight:700,fontSize:11}},ent),
+                ]),
+                h('div',{key:'r2',className:'b-sm',style:{lineHeight:1.4,wordBreak:'break-word'}},a.label||'—'),
+                h('div',{key:'r3',className:'b-xs muted',style:{marginTop:3}},[
+                  h('span',{key:'who',style:{color:acc.accent,fontWeight:700}},acc.name),
+                  ' · '+actWhen(asDate(a.at)),
+                ]),
+              ]),
+            ]));
+          })),
+    ]),
+  ]);
+}
+
 /* ---- Pengaturan notifikasi (berfungsi) ---- */
 function NotifSheet({ctx}){
   const {store}=ctx; const s=store.state;
@@ -3799,6 +3919,8 @@ function SettingScreen({ctx}){
       h(SettingRow,{key:'sec',icon:'eye',color:C.maroon,title:'Keamanan & kunci',sub:'Durasi kunci layar & PIN',onClick:()=>ctx.openSheet('security')}),
       h('div',{key:'d0',className:'setdiv'}),
       h(SettingRow,{key:'pw',icon:'settings',color:C.teal,title:'Ubah kata sandi',onClick:()=>ctx.openSheet('changePw')}),
+      h('div',{key:'dal',className:'setdiv'}),
+      h(SettingRow,{key:'al',icon:'book',color:C.clay,title:'Log Aktivitas',sub:'Riwayat tambah / ubah / hapus data',onClick:()=>ctx.setOverlay('activity')}),
       h('div',{key:'d1',className:'setdiv'}),
       h(SettingRow,{key:'bk',icon:'savings',color:C.sage,title:'Export data',sub:'Unduh cadangan (file JSON)',onClick:()=>exportData(store.state)}),
     ]),

@@ -749,8 +749,15 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.14';
+const APP_VERSION='1.15';
 const CHANGELOG=[
+  {v:'1.15', date:'12 Agu 2026', items:[
+    'Batas anggaran (tab Anggaran) kini berdiri sendiri — terpisah dari Budget Matrix. Default Rp 0; isi untuk memantau Aman / Over periode ini.',
+    'Status Aman / Over anggaran tampil jelas di ringkasan Anggaran.',
+    'Daftar transaksi tab Anggaran dibatasi 20 baris + tombol "Load More" (+20). Berlaku untuk Semua/Masuk/Keluar & pencarian.',
+    'AI Asisten dirombak: kini benar-benar membaca & menghitung data (bukan pencocokan tombol). Tanya bebas + sebut periode, mis. "Juni, tanggal tanpa pengeluaran" atau "tagihan terbesar bulan lalu".',
+    'AI membedakan tagihan (acara/perawatan terjadwal) vs pengeluaran (transaksi), dan tahu beda "belum paham" vs "data kosong".',
+  ]},
   {v:'1.14', date:'12 Agu 2026', items:[
     'Tambah Plan kini punya kolom "Budget bulan ini" — isi sendiri batas belanja bulan target (default Rp 0).',
     'Budget & Plan jadi angka terpisah: Budget = yang kamu set manual, Plan = total item rencana bulan itu.',
@@ -1379,7 +1386,7 @@ function rkDefaultState(){
     // riwayat aktivitas
     activityLog:[],
     // pengaturan
-    settings:{paydayDefault:28,periodOverrides:{},
+    settings:{paydayDefault:28,periodOverrides:{},budgetLimits:{},
       notif:{enabled:false,events:true,maintenance:true},
       homeLocation:'', lockSec:60},
   };
@@ -1765,6 +1772,10 @@ function useStore(){
       return {trips:s.trips.filter(x=>x.id!==id),
               matrixItems:t&&t.matrixId?s.matrixItems.filter(m=>m.id!==t.matrixId):s.matrixItems}; }),
     setPayday:d=>up(s=>{ const ns={...s.settings,paydayDefault:d}; rkWriteSettings(ns);
+      return {settings:ns}; }),
+    // Batas anggaran manual per-periode (TERPISAH dari monthlyBudget/Matrix).
+    setBudgetLimit:(key,amt)=>up(s=>{ const ns={...s.settings,budgetLimits:{...(s.settings.budgetLimits||{}),[key]:amt}}; rkWriteSettings(ns);
+      logActivity('budget','budget','Batas anggaran '+key+' → '+rupiah(amt));
       return {settings:ns}; }),
     patchSettings:patch=>up(s=>{ const ns={...s.settings,...patch}; rkWriteSettings(ns);
       return {settings:ns}; }),
@@ -2176,7 +2187,7 @@ function SheetRouter({sheet,ctx}){
     event:EventSheet, maintenance:MaintenanceSheet, eventCategory:EventCategorySheet,
     journal:JournalSheet, reflection:ReflectionSheet, conversation:ConversationSheet,
     goal:GoalSheet, trip:TripSheet, segment:SegmentSheet, periodEditor:PeriodEditorSheet,
-    budgetEdit:BudgetEditSheet, paydayEdit:PaydayEditSheet, changePw:ChangePwSheet,
+    budgetEdit:BudgetEditSheet, budgetLimit:BudgetLimitSheet, paydayEdit:PaydayEditSheet, changePw:ChangePwSheet,
     tripExport:TripExportSheet, notif:NotifSheet, cover:CoverSheet, security:SecuritySheet,
     budgetExport:BudgetExportSheet,
   };
@@ -2428,10 +2439,14 @@ function BudgetScreen({ctx}){
   const [pOff,setPOff]=useState(0);
   const cur=shiftPeriod(nowPer.y,nowPer.m,pOff); const perY=cur.y, perM=cur.m;
   const isNow=pOff===0;
-  const budgetBulan=s.monthlyBudget[periodKey(perY,perM)]??DEFAULT_BUDGET;
+  // Batas anggaran = angka manual TERPISAH (settings.budgetLimits). Default 0 (belum diatur).
+  const limits=(s.settings&&s.settings.budgetLimits)||{};
+  const budgetBulan=limits[periodKey(perY,perM)]||0;
+  const budgetSet=budgetBulan>0;
   const totalPeng=calc.totalExpense(perY,perM);
   const sisa=budgetBulan-totalPeng;
   const pct=budgetBulan===0?0:Math.min(1,totalPeng/budgetBulan);
+  const over=budgetSet&&totalPeng>budgetBulan;
   const barColor=pct>=1?C.expense:pct>=.8?C.clay:C.teal;
 
   return h('div',{style:{paddingBottom:28},className:'fadein'},[
@@ -2452,15 +2467,19 @@ function BudgetScreen({ctx}){
             h('div',{key:'1',className:'b-sm muted'},'Pengeluaran bulan ini'),
             h('div',{key:'2',className:'h-sm',style:{marginTop:4}},rupiah(totalPeng)),
           ]),
-          h('button',{key:'r',style:{textAlign:'right'},onClick:()=>openSheet('budgetEdit',{pkey:periodKey(perY,perM),label:`${BULAN[perM-1]} ${perY}`,current:budgetBulan})},[
+          h('button',{key:'r',style:{textAlign:'right'},onClick:()=>openSheet('budgetLimit',{pkey:periodKey(perY,perM),label:`${BULAN[perM-1]} ${perY}`,current:budgetBulan})},[
             h('div',{key:'1',className:'b-sm muted row gap4',style:{justifyContent:'flex-end'}},['Batas anggaran',h(Icon,{key:'i',name:'edit',size:12,color:'var(--inkSoft)'})]),
-            h('div',{key:'2',style:{fontWeight:700,fontSize:16,color:'var(--inkSoft)',marginTop:4}},rupiah(budgetBulan)),
+            h('div',{key:'2',style:{fontWeight:700,fontSize:16,color:budgetSet?'var(--ink)':'var(--inkSoft)',marginTop:4}},budgetSet?rupiah(budgetBulan):'Rp 0 · atur'),
           ]),
         ]),
         h('div',{key:'p',className:'progress',style:{marginTop:12}},h('div',{style:{width:(pct*100)+'%',background:barColor}})),
         h('div',{key:'b',className:'between',style:{marginTop:8}},[
-          h('div',{key:'1',style:{color:barColor,fontWeight:700,fontSize:13}},`${Math.round(pct*100)}% terpakai`),
-          h('div',{key:'2',className:'b-sm'},['Sisa Anggaran: ',h('b',{key:'v',style:{color:sisa<0?C.expense:'var(--ink)'}},rupiah(sisa))]),
+          budgetSet
+            ? h('span',{key:'1',className:'chip',style:{background:(over?C.expense:C.income)+'1a',color:over?C.expense:C.income,fontWeight:800,fontSize:12}},over?'⚠️ Over anggaran':'✓ Aman')
+            : h('div',{key:'1',className:'b-sm muted',style:{fontWeight:600}},'Batas belum diatur'),
+          budgetSet
+            ? h('div',{key:'2',className:'b-sm'},['Sisa: ',h('b',{key:'v',style:{color:sisa<0?C.expense:'var(--ink)'}},rupiah(sisa))])
+            : null,
         ]),
       ]),
       h('div',{key:'st',className:'pill-tabs',style:{margin:'16px 0'}},['Transaksi','Kategori'].map((l,i)=>
@@ -2493,6 +2512,15 @@ function TxTab({s,calc,q,setQ,period,setPeriod,typeF,setTypeF,today,openSheet,
     return true;
   }).sort((a,b)=>b.date-a.date);
 
+  // Pagination: tampil 20 dulu, "Load More" +20. Reset saat filter/pencarian berubah.
+  const PAGE=20;
+  const [shown,setShown]=useState(PAGE);
+  const filterSig=`${typeF}|${period}|${weekSel}|${monthSel}|${yearSel}|${(q||'').toLowerCase()}`;
+  const sigRef=useRef(filterSig);
+  if(sigRef.current!==filterSig){ sigRef.current=filterSig; if(shown!==PAGE) setShown(PAGE); }
+  const visibleList=list.slice(0,shown);
+  const hasMore=list.length>shown;
+
   const onPeriod=k=>{
     if(period===k && (k==='week'||k==='month')){ setPickerOpen(o=>!o); return; } // klik kedua → toggle picker
     setPeriod(k); setPickerOpen(k==='week'||k==='month'?false:false);
@@ -2523,7 +2551,10 @@ function TxTab({s,calc,q,setQ,period,setPeriod,typeF,setTypeF,today,openSheet,
     (period==='week'&&!pickerOpen)?h('div',{key:'wl',className:'b-sm muted',style:{marginBottom:10,fontWeight:600}},weekLabel+' · '+BULAN[today.getMonth()]):null,
     (period==='month'&&!pickerOpen)?h('div',{key:'ml',className:'b-sm muted',style:{marginBottom:10,fontWeight:600}},monthLabelSel):null,
     list.length===0?h('div',{key:'e',className:'muted',style:{textAlign:'center',padding:'30px 0'}},'Tidak ada transaksi yang cocok.'):null,
-    ...list.map(tx=>h(TxItem,{key:tx.id,tx,cat:calc.catById(tx.categoryId),trip:tx.tripId?s.trips.find(t=>t.id===tx.tripId):null,openSheet})),
+    ...visibleList.map(tx=>h(TxItem,{key:tx.id,tx,cat:calc.catById(tx.categoryId),trip:tx.tripId?s.trips.find(t=>t.id===tx.tripId):null,openSheet})),
+    hasMore?h('button',{key:'more',className:'btn',style:{width:'100%',padding:13,marginTop:4,background:C.teal+'12',color:C.teal,border:`1.5px solid ${C.teal}44`,fontWeight:700},onClick:()=>setShown(n=>n+PAGE)},
+      [h(Icon,{key:'i',name:'down',size:16,color:C.teal}),`Load More (${list.length-shown} lagi)`]):null,
+    (list.length>PAGE&&!hasMore)?h('div',{key:'cnt',className:'b-xs muted',style:{textAlign:'center',padding:'10px 0 2px'}},`Menampilkan semua ${list.length} transaksi`):null,
   ]);
 }
 
@@ -3118,89 +3149,249 @@ function OverlayHeader({title,onBack,action}){
    Saat integrasi Firebase + Model Gateway, ganti aiAnswer() dgn panggilan API
    yang mengirim snapshot ringkas ini sebagai context.
    ===================================================================== */
-function buildAISnapshot(s){
-  const calc=makeCalc(s);
-  const per=periodOf(s,FIN_TODAY); const y=per.y,m=per.m;
-  const budget=s.monthlyBudget[periodKey(y,m)]??DEFAULT_BUDGET;
-  const pemasukan=calc.totalIncome(y,m), pengeluaran=calc.totalExpense(y,m);
-  const ch=calc.cukupHari({year:y,month:m,budgetBelanja:budget,today:FIN_TODAY,lajuManual:null});
-  // kategori pengeluaran terbesar
-  const catAgg=[];
-  s.categories.filter(c=>c.type==='expense').forEach(c=>{ const v=calc.expenseByCategory(c.id,y,m); if(v>0)catAgg.push({name:c.name,value:v,limit:c.limit}); });
-  catAgg.sort((a,b)=>b.value-a.value);
-  // pengingat (acara ≤7 hari + perawatan due)
-  const rem=buildReminders(s.events,s.maintenance,todayD,7);
-  // plan matrix bulan ini
-  const planThis=s.matrixItems.filter(x=>x.year===y&&x.month===m);
-  const planTotal=planThis.reduce((a,x)=>a+x.amount,0);
-  // goals
-  const goals=s.goals.map(g=>({title:g.title,saved:g.saved,target:g.target,pct:Math.round(g.saved/g.target*100)}));
-  return {y,m,budget,pemasukan,pengeluaran,saldo:pemasukan-pengeluaran,kumulatif:calc.kumulatif(),ch,catAgg,rem,planThis,planTotal,goals};
+/* =====================================================================
+   AI ASISTEN — function-calling nyata (offline, siap Model Gateway)
+   Router memilih {name, arguments} → memanggil fungsi get* → format hasil.
+   Struktur ini identik dgn function-calling online: nanti LLM yang memilih
+   fungsi + argumen; snapshot ringkas dikirim sbg context, DB penuh tidak.
+   ===================================================================== */
+
+// --- Util periode & tanggal ---
+function periodKeysAround(s, n){
+  // n periode terakhir termasuk berjalan → [{y,m,key}]
+  const now=periodOf(s,FIN_TODAY); const out=[];
+  for(let i=0;i<n;i++){ const p=shiftPeriod(now.y,now.m,-i); out.push({y:p.y,m:p.m,key:periodKey(p.y,p.m)}); }
+  return out;
 }
-function aiAnswer(qRaw,snap){
+const AI_BULAN_IDX={januari:0,februari:1,pebruari:1,maret:2,april:3,mei:4,juni:5,juli:6,agustus:7,agu:7,september:8,sept:8,oktober:9,okt:9,november:10,nov:10,desember:11,des:11};
+
+// Terjemahkan frasa bebas → periodKey pay-period. null jika tak menyebut periode.
+function resolvePeriod(s, qLower){
+  const now=periodOf(s,FIN_TODAY);
+  // relatif
+  if(/\b(bulan lalu|periode lalu|bulan kemarin|sebelumnya)\b/.test(qLower)){ const p=shiftPeriod(now.y,now.m,-1); return mkPeriod(s,p.y,p.m); }
+  if(/\b(bulan ini|periode ini|sekarang|saat ini)\b/.test(qLower)){ return mkPeriod(s,now.y,now.m); }
+  // nama bulan (+ tahun opsional)
+  for(const name in AI_BULAN_IDX){
+    const re=new RegExp('\\b'+name+'\\b');
+    if(re.test(qLower)){
+      const mi=AI_BULAN_IDX[name]; // 0-based
+      const ym=new RegExp(name+'\\s*(20\\d{2})').exec(qLower);
+      let year=ym?parseInt(ym[1],10):null;
+      if(year==null){
+        // pilih tahun: periode m/year yang tidak di masa depan relatif periode berjalan
+        const curKey=now.y*100+now.m;
+        let cand=now.y;
+        if((cand*100+(mi+1))>curKey) cand=now.y-1; // kalau bulan itu di depan → tahun lalu
+        year=cand;
+      }
+      return mkPeriod(s,year,mi+1);
+    }
+  }
+  return null;
+}
+function mkPeriod(s,y,m){
+  const {start,end}=periodRange(s,y,m);
+  return {y,m,key:periodKey(y,m),label:`${BULAN[m-1]} ${y}`,start,end};
+}
+
+// --- FUNGSI YANG BOLEH DIPANGGIL AI ---
+function aiGetSaldo(s, key){
+  const calc=makeCalc(s);
+  const p=key?keyToPeriod(s,key):mkPeriod(s,periodOf(s,FIN_TODAY).y,periodOf(s,FIN_TODAY).m);
+  const pemasukan=calc.totalIncome(p.y,p.m), pengeluaran=calc.totalExpense(p.y,p.m);
+  return {y:p.y,m:p.m,label:p.label,pemasukan,pengeluaran,saldo:pemasukan-pengeluaran,kumulatif:calc.kumulatif()};
+}
+function keyToPeriod(s,key){ const [y,m]=key.split('-').map(Number); return mkPeriod(s,y,m); }
+
+function aiPengeluaranByPeriod(s,key){
+  const calc=makeCalc(s); const p=keyToPeriod(s,key);
+  const txb=calc.txInMonth(p.y,p.m).filter(calc.isExpense);
+  const total=txb.reduce((a,t)=>a+t.amount,0);
+  const byMap={};
+  txb.forEach(t=>{ const c=calc.catById(t.categoryId); const nm=c?c.name:'Lainnya'; byMap[nm]=(byMap[nm]||0)+t.amount; });
+  const byKategori=Object.entries(byMap).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+  return {label:p.label,total,count:txb.length,byKategori};
+}
+
+function aiHariTanpaPengeluaran(s,key){
+  const calc=makeCalc(s); const p=keyToPeriod(s,key);
+  const {start,end}=periodRange(s,p.y,p.m);
+  const expTx=calc.txInMonth(p.y,p.m).filter(calc.isExpense);
+  const adaSet=new Set(expTx.map(t=>`${t.date.getFullYear()}-${t.date.getMonth()}-${t.date.getDate()}`));
+  const hariKosong=[]; const hariAda=[];
+  const clamp=new Date(Math.min(end.getTime(), new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.getDate()).getTime()));
+  const stop=clamp>=start?clamp:end;
+  let d=new Date(start.getFullYear(),start.getMonth(),start.getDate());
+  let guard=0;
+  while(d<=stop && guard<400){
+    const k2=`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if(adaSet.has(k2)) hariAda.push(new Date(d)); else hariKosong.push({date:new Date(d),label:tanggal(d)});
+    d=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1); guard++;
+  }
+  return {label:p.label,start,end,totalHari:hariAda.length+hariKosong.length,hariAda,hariKosong,jumlahKosong:hariKosong.length,sampai:stop};
+}
+
+function aiTagihanTerbesar(s,key){
+  // TAGIHAN = kewajiban terjadwal (events berbiaya + maintenance berbiaya), BUKAN transaksi.
+  const p=key?keyToPeriod(s,key):null;
+  const inPeriod=(d)=>{ if(!p) return true; const {start,end}=periodRange(s,p.y,p.m); const dd=new Date(d.getFullYear(),d.getMonth(),d.getDate()); return dd>=start&&dd<=end; };
+  const items=[];
+  (s.events||[]).forEach(e=>{ if(e.biaya>0 && e.date && typeof e.date.getFullYear==='function' && inPeriod(e.date)) items.push({judul:e.title,biaya:e.biaya,due:e.date,jenis:'acara'}); });
+  (s.maintenance||[]).forEach(m=>{ const due=nextDue(m)||m.last; if(m.biaya>0 && due && inPeriod(due)) items.push({judul:m.name,biaya:m.biaya,due,jenis:'perawatan'}); });
+  items.sort((a,b)=>b.biaya-a.biaya);
+  return {label:p?p.label:'semua periode',items,terbesar:items[0]||null};
+}
+
+function aiPengeluaranTerbesar(s,key){
+  const calc=makeCalc(s); const p=keyToPeriod(s,key);
+  const txb=calc.txInMonth(p.y,p.m).filter(calc.isExpense).slice().sort((a,b)=>b.amount-a.amount);
+  const items=txb.map(t=>({note:t.note||'(tanpa catatan)',kategori:(calc.catById(t.categoryId)||{}).name||'',amount:t.amount,date:t.date}));
+  return {label:p.label,items,terbesar:items[0]||null};
+}
+
+function aiKategoriTerbesar(s,key){
+  const calc=makeCalc(s); const p=keyToPeriod(s,key);
+  const items=[];
+  s.categories.filter(c=>c.type==='expense').forEach(c=>{ const v=calc.expenseByCategory(c.id,p.y,p.m); if(v>0)items.push({name:c.name,value:v,limit:c.limit||0,over:(c.limit>0&&v>c.limit)}); });
+  items.sort((a,b)=>b.value-a.value);
+  return {label:p.label,items,terbesar:items[0]||null};
+}
+
+function aiGetGoals(s){
+  return {items:(s.goals||[]).map(g=>({title:g.title,saved:g.saved,target:g.target,pct:g.target>0?Math.round(g.saved/g.target*100):0}))};
+}
+
+function aiGetCukupHari(s,key){
+  const calc=makeCalc(s); const p=key?keyToPeriod(s,key):mkPeriod(s,periodOf(s,FIN_TODAY).y,periodOf(s,FIN_TODAY).m);
+  const budget=s.monthlyBudget[periodKey(p.y,p.m)]??DEFAULT_BUDGET;
+  const ch=calc.cukupHari({year:p.y,month:p.m,budgetBelanja:budget,today:FIN_TODAY,lajuManual:null});
+  return {label:p.label,cukupHari:ch.cukupHari,avgHarian:ch.avgHarian,sisaSaldo:ch.sisaSaldo,tanggalHabis:ch.tanggalHabis};
+}
+
+// --- SNAPSHOT ringkas (context umum; DB penuh tak dikirim) ---
+function buildAISnapshot(s){
+  const now=periodOf(s,FIN_TODAY);
+  const periods=periodKeysAround(s,3).map(pk=>{
+    const per=aiPengeluaranByPeriod(s,pk.key);
+    const sal=aiGetSaldo(s,pk.key);
+    const kosong=aiHariTanpaPengeluaran(s,pk.key);
+    const bigTx=aiPengeluaranTerbesar(s,pk.key).terbesar;
+    return {key:pk.key,label:`${BULAN[pk.m-1]} ${pk.y}`,y:pk.y,m:pk.m,
+      pemasukan:sal.pemasukan,pengeluaran:sal.pengeluaran,saldo:sal.saldo,
+      byKategori:per.byKategori.slice(0,5),jumlahKosong:kosong.jumlahKosong,
+      pengeluaranTerbesar:bigTx};
+  });
+  const tagihan=aiTagihanTerbesar(s,null).items.slice(0,8);
+  const goals=aiGetGoals(s).items;
+  const cukup=aiGetCukupHari(s,null);
+  return {today:FIN_TODAY,periodBerjalan:{y:now.y,m:now.m,key:periodKey(now.y,now.m),label:`${BULAN[now.m-1]} ${now.y}`},periods,tagihan,goals,cukupHari:cukup};
+}
+
+// --- ROUTER: pertanyaan bebas → panggilan fungsi → jawaban terkomputasi ---
+function aiRoute(qRaw,s){
   const q=qRaw.toLowerCase();
-  const has=(...w)=>w.some(x=>q.includes(x));
   const R=rupiah;
-  // Saldo / ringkasan
-  if(has('saldo','ringkas','kondisi','keuangan','uang','sisa uang')){
-    return {text:`Ringkasan ${BULAN[snap.m-1]} ${snap.y}:\n• Pemasukan: ${R(snap.pemasukan)}\n• Pengeluaran: ${R(snap.pengeluaran)}\n• Saldo: ${R(snap.saldo)}\n• Kumulatif semua waktu: ${snap.kumulatif>=0?'+':''}${R(snap.kumulatif)}\n\nDana belanja diperkirakan cukup untuk ~${snap.ch.cukupHari} hari lagi (rata-rata ${R(snap.ch.avgHarian)}/hari).`,
-      chips:['Kategori terbesar','Cukup berapa hari?','Ada tagihan?']};
+  const has=(...w)=>w.some(x=>q.includes(x));
+  const per=resolvePeriod(s,q); // {key,label,...} atau null
+  const keyOf=()=> (per?per.key:s?periodKey(periodOf(s,FIN_TODAY).y,periodOf(s,FIN_TODAY).m):null);
+  const labelOf=()=> (per?per.label:buildAISnapshot(s).periodBerjalan.label);
+
+  // 1) HARI TANPA PENGELUARAN
+  if(has('tidak ada pengeluaran','tanpa pengeluaran','tidak ada transaksi','tanpa transaksi','tanggal berapa saja','hari kosong','tidak belanja','tidak jajan')){
+    const r=aiHariTanpaPengeluaran(s,keyOf());
+    if(r.jumlahKosong===0) return {text:`Di ${r.label}, tiap hari (s/d ${tanggal(r.sampai)}) tercatat ada pengeluaran — tak ada hari kosong. 👍`,chips:['Kategori terbesar '+labelOf(),'Pengeluaran terbesar']};
+    const listed=r.hariKosong.slice(0,15).map(d=>'• '+d.label).join('\n');
+    const more=r.hariKosong.length>15?`\n…dan ${r.hariKosong.length-15} tanggal lagi.`:'';
+    return {text:`Di ${r.label} ada ${r.jumlahKosong} hari tanpa pengeluaran (dari ${r.totalHari} hari s/d ${tanggal(r.sampai)}):\n${listed}${more}`,chips:['Total pengeluaran '+r.label,'Kategori terbesar']};
   }
-  // Cukup berapa hari
-  if(has('cukup','berapa hari','bertahan','habis')){
-    return {text:`Dengan pola belanja saat ini, dana kamu cukup untuk ~${snap.ch.cukupHari} hari (sekitar ${tanggal(snap.ch.tanggalHabis)}).\nRata-rata konsumsi harian: ${R(snap.ch.avgHarian)}. Sisa dana belanja: ${R(snap.ch.sisaSaldo)}.\n\nTips: kalau ingin lebih hemat, turunkan pengeluaran di kategori harian terbesar.`,
-      chips:['Kategori terbesar','Saldo saya']};
+
+  // 2) TAGIHAN (bukan transaksi)
+  if(has('tagihan','jatuh tempo','kewajiban','harus bayar','bill')){
+    const r=aiTagihanTerbesar(s,per?keyOf():null);
+    if(!r.items.length) return {text:`Tak ada tagihan terjadwal${per?` di ${r.label}`:''} (acara/perawatan berbiaya). 🌿`,chips:['Pengeluaran terbesar','Cukup berapa hari?']};
+    if(has('terbesar','paling besar','paling mahal','tertinggi')){
+      const t=r.terbesar;
+      return {text:`Tagihan terbesar${per?` di ${r.label}`:''}: ${t.judul} — ${R(t.biaya)} (${t.jenis}, ${tanggal(t.due)}).`,chips:['Semua tagihan','Pengeluaran terbesar']};
+    }
+    const list=r.items.slice(0,6).map(t=>`• ${t.judul}: ${R(t.biaya)} — ${t.jenis}, ${tanggal(t.due)}`).join('\n');
+    return {text:`Tagihan terjadwal${per?` ${r.label}`:''}:\n${list}`,chips:['Tagihan terbesar','Pengeluaran terbesar']};
   }
-  // Kategori terbesar
-  if(has('kategori','terbesar','boros','paling banyak','habis di mana','kemana')){
-    if(!snap.catAgg.length)return {text:'Belum ada pengeluaran tercatat bulan ini.'};
-    const top=snap.catAgg.slice(0,4).map((c,i)=>`${i+1}. ${c.name}: ${R(c.value)}${c.limit>0?` (batas ${R(c.limit)}${c.value>c.limit?' ⚠️ lewat':''})`:''}`).join('\n');
-    return {text:`Pengeluaran terbesar ${BULAN[snap.m-1]}:\n${top}`,chips:['Saran hemat','Saldo saya']};
+
+  // 3) PENGELUARAN TERBESAR (transaksi)
+  if(has('pengeluaran terbesar','transaksi terbesar','belanja terbesar','paling boros','pengeluaran paling') || (has('terbesar','paling besar','paling mahal') && has('pengeluaran','belanja','keluar','transaksi'))){
+    const r=aiPengeluaranTerbesar(s,keyOf());
+    if(!r.items.length) return {text:`Belum ada pengeluaran tercatat di ${r.label}.`,chips:['Kategori terbesar','Ada tagihan?']};
+    const top=r.items.slice(0,5).map((t,i)=>`${i+1}. ${t.note} — ${R(t.amount)} (${t.kategori}, ${tanggal(t.date)})`).join('\n');
+    return {text:`Pengeluaran terbesar ${r.label}:\n${top}`,chips:['Kategori terbesar','Total pengeluaran '+r.label]};
   }
-  // Saran hemat
-  if(has('hemat','saran','tips','kurangi','irit')){
-    const top=snap.catAgg[0];
-    return {text:`Beberapa saran:\n• Fokus pada kategori terbesar${top?` — saat ini "${top.name}" (${R(top.value)})`:''}.\n• Sisihkan dulu untuk goal menabung di awal bulan, bukan dari sisa.\n• Cek "Plan" di Matrix: tunda item kuadran "Nanti Saja" bila arus kas ketat.\n• Pakai fitur "Cukup ~X hari" di Beranda untuk simulasi batas harian.`,
-      chips:['Goal saya','Plan bulan ini']};
+
+  // 4) KATEGORI TERBESAR
+  if(has('kategori') && has('terbesar','paling banyak','boros','habis di mana','kemana','ke mana') || has('kategori terbesar')){
+    const r=aiKategoriTerbesar(s,keyOf());
+    if(!r.items.length) return {text:`Belum ada pengeluaran tercatat di ${r.label}.`,chips:['Ada tagihan?','Saldo saya']};
+    const top=r.items.slice(0,5).map((c,i)=>`${i+1}. ${c.name}: ${R(c.value)}${c.limit>0?` (batas ${R(c.limit)}${c.over?' ⚠️ lewat':''})`:''}`).join('\n');
+    return {text:`Kategori pengeluaran terbesar ${r.label}:\n${top}`,chips:['Pengeluaran terbesar','Saran hemat']};
   }
-  // Tagihan / pengingat
-  if(has('tagihan','pengingat','jatuh tempo','acara','agenda','reminder','minggu ini')){
-    if(!snap.rem.length)return {text:'Tidak ada acara berbiaya atau perawatan yang jatuh tempo dalam 7 hari ke depan. Aman. 🌿'};
-    const list=snap.rem.slice(0,5).map(r=>`• ${r.judul} — ${r.selisih<0?`lewat ${-r.selisih} hari`:r.selisih===0?'hari ini':`${r.selisih} hari lagi`}`).join('\n');
-    return {text:`Yang perlu diperhatikan (≤7 hari):\n${list}`,chips:['Saldo saya','Plan bulan ini']};
+
+  // 5) TOTAL PENGELUARAN / RINGKAS PERIODE
+  if(has('total pengeluaran','berapa pengeluaran','pengeluaran','habis berapa','belanja berapa')){
+    const r=aiPengeluaranByPeriod(s,keyOf());
+    if(r.count===0) return {text:`Belum ada pengeluaran tercatat di ${r.label}.`,chips:['Ada tagihan?','Saldo saya']};
+    const brk=r.byKategori.slice(0,4).map(c=>`  – ${c.name}: ${R(c.value)}`).join('\n');
+    return {text:`Total pengeluaran ${r.label}: ${R(r.total)} (${r.count} transaksi)\n${brk}`,chips:['Kategori terbesar','Pengeluaran terbesar']};
   }
-  // Plan / matrix
-  if(has('plan','matrix','beli','rencana','barang','kuadran')){
-    if(!snap.planThis.length)return {text:`Belum ada Plan untuk ${BULAN[snap.m-1]}. Kamu bisa menambah lewat tombol "+Plan" di Anggaran/Matrix, atau input acara berbiaya di Kalender (otomatis masuk kuadran "Nanti Saja").`};
-    const byq={up:[],p:[],u:[],n:[]}; snap.planThis.forEach(x=>byq[x.quadrant].push(x));
-    const seg=Object.entries(QUAD).map(([k,v])=>byq[k].length?`${v.label}: ${byq[k].map(x=>x.title).join(', ')}`:null).filter(Boolean).join('\n');
-    return {text:`Plan ${BULAN[snap.m-1]} (total ${R(snap.planTotal)} vs budget ${R(snap.budget)}${snap.planTotal>snap.budget?' ⚠️ OVER':''}):\n${seg}`,chips:['Saran hemat','Saldo saya']};
+
+  // 6) SALDO / RINGKASAN
+  if(has('saldo','ringkas','kondisi','keuangan','pemasukan','masuk berapa','sisa uang')){
+    const r=aiGetSaldo(s,keyOf());
+    return {text:`Ringkasan ${r.label}:\n• Pemasukan: ${R(r.pemasukan)}\n• Pengeluaran: ${R(r.pengeluaran)}\n• Saldo: ${R(r.saldo)}\n• Kumulatif semua waktu: ${r.kumulatif>=0?'+':''}${R(r.kumulatif)}`,chips:['Kategori terbesar','Cukup berapa hari?','Ada tagihan?']};
   }
-  // Goal
+
+  // 7) CUKUP BERAPA HARI
+  if(has('cukup','berapa hari','bertahan','habis kapan','sampai kapan')){
+    const r=aiGetCukupHari(s,per?keyOf():null);
+    return {text:`Dengan pola belanja saat ini (${r.label}), dana cukup ~${r.cukupHari} hari lagi (sekitar ${tanggal(r.tanggalHabis)}). Rata-rata harian ${R(r.avgHarian)}, sisa dana belanja ${R(r.sisaSaldo)}.`,chips:['Kategori terbesar','Saran hemat']};
+  }
+
+  // 8) GOAL
   if(has('goal','nabung','menabung','tabungan','target')){
-    if(!snap.goals.length)return {text:'Belum ada goal menabung. Buka menu Goal untuk membuatnya.'};
-    const list=snap.goals.map(g=>`• ${g.title}: ${R(g.saved)} / ${R(g.target)} (${g.pct}%)`).join('\n');
-    return {text:`Progress goal menabung:\n${list}`,chips:['Saran hemat','Saldo saya']};
+    const r=aiGetGoals(s);
+    if(!r.items.length) return {text:'Belum ada goal menabung. Buka menu Goal untuk membuatnya.',chips:['Saldo saya','Cukup berapa hari?']};
+    const list=r.items.map(g=>`• ${g.title}: ${R(g.saved)} / ${R(g.target)} (${g.pct}%)`).join('\n');
+    return {text:`Progress goal menabung:\n${list}`,chips:['Saldo saya','Saran hemat']};
   }
-  // Sapaan
-  if(has('halo','hai','hi','pagi','siang','sore','malam','terima kasih','makasih')){
-    return {text:'Halo! Aku asisten RumahKita. Aku bisa bantu merangkum keuangan, mengecek tagihan, plan, dan goal menabung kalian. Coba tanya sesuatu, atau pilih salah satu di bawah.',
-      chips:['Saldo saya','Cukup berapa hari?','Ada tagihan?','Goal saya']};
+
+  // 9) SARAN HEMAT
+  if(has('hemat','saran','tips','kurangi','irit')){
+    const kt=aiKategoriTerbesar(s,keyOf()); const top=kt.terbesar;
+    return {text:`Beberapa saran:\n• Fokus kategori terbesar${top?` — "${top.name}" (${R(top.value)}) di ${kt.label}`:''}.\n• Sisihkan untuk goal di awal periode, bukan dari sisa.\n• Tunda item kuadran "Nanti Saja" di Matrix bila arus kas ketat.\n• Pantau "Cukup ~X hari" di Beranda.`,chips:['Kategori terbesar','Goal saya']};
   }
-  // Fallback
-  return {text:'Aku belum yakin memahami itu, tapi aku bisa bantu soal: saldo & ringkasan, "cukup berapa hari", kategori pengeluaran terbesar, tagihan/pengingat, plan di Matrix, dan goal menabung. Pilih salah satu di bawah ya.',
+
+  // 10) SAPAAN
+  if(has('halo','hai','hi ','pagi','siang','sore','malam','makasih','terima kasih')){
+    return {text:'Halo! Aku asisten RumahKita. Aku bisa membaca & menghitung datamu — coba tanya bebas, misalnya "Juni, tanggal berapa saja tak ada pengeluaran?" atau "tagihan terbesar bulan lalu".',chips:['Saldo saya','Cukup berapa hari?','Ada tagihan?','Goal saya']};
+  }
+
+  // FALLBACK — tidak paham (kondisi a). Baru tampilkan menu.
+  return {text:'Aku belum menangkap maksudnya. Aku bisa menghitung: saldo & ringkasan periode, total & kategori pengeluaran, pengeluaran terbesar, hari tanpa pengeluaran, tagihan terjadwal, "cukup berapa hari", dan goal menabung. Sebut juga periodenya (mis. "Juni") bila perlu.',
     chips:['Saldo saya','Kategori terbesar','Ada tagihan?','Goal saya']};
+}
+// Kompat: aiAnswer(q,snap) lama → arahkan ke router baru (snap tak lagi wajib).
+function aiAnswer(qRaw,snapOrState){
+  const s=(snapOrState&&snapOrState.categories)?snapOrState:(window.__rkState||null);
+  return aiRoute(qRaw, s);
 }
 function AssistantScreen({ctx}){
   const {store,setOverlay}=ctx; const s=store.state;
-  const snap=buildAISnapshot(s);
-  const [msgs,setMsgs]=useState([{role:'ai',text:'Halo! Aku asisten RumahKita 🌿\nAku bantu merangkum keuangan, cek tagihan, plan, dan goal kalian. Data kalian tetap privat — aku hanya melihat ringkasannya. Mau mulai dari mana?',
-    chips:['Saldo saya','Cukup berapa hari?','Ada tagihan?','Goal saya']}]);
+  window.__rkState=s; // untuk shim & panggilan fungsi AI
+  const [msgs,setMsgs]=useState([{role:'ai',text:'Halo! Aku asisten RumahKita 🌿\nAku bisa membaca & menghitung datamu — bukan cuma preset. Tanya bebas, sebut periodenya bila perlu. Data tetap privat.',
+    chips:['Saldo saya','Kategori terbesar','Ada tagihan?','Hari tanpa pengeluaran']}]);
   const [input,setInput]=useState('');
   const scRef=useRef();
   const send=(text)=>{
     const q=(text??input).trim(); if(!q)return;
-    const ans=aiAnswer(q,snap);
+    const ans=aiRoute(q, store.state); // dihitung ulang dari state terkini
     setMsgs(m=>[...m,{role:'me',text:q},{role:'ai',text:ans.text,chips:ans.chips}]);
     setInput('');
     setTimeout(()=>{ const el=document.getElementById('appScroll'); if(el)el.scrollTop=el.scrollHeight; },30);
@@ -3224,7 +3415,7 @@ function AssistantScreen({ctx}){
     // input bar (portaled to stay above nav)
     ReactDOM.createPortal(
       h('div',{className:'aibar'},[
-        h('input',{key:'in',className:'aiinput',value:input,placeholder:'Tanya soal keuangan keluarga…',
+        h('input',{key:'in',className:'aiinput',value:input,placeholder:'mis. "Juni, tagihan terbesar?"',
           onChange:e=>setInput(e.target.value),onKeyDown:e=>{if(e.key==='Enter')send();}}),
         h('button',{key:'s',className:'aisend',onClick:()=>send()},h(Icon,{name:'arrowr',size:20,color:'#fff'})),
       ]),
@@ -5141,6 +5332,21 @@ function PeriodEditRow({ctx,pkey,start,end,isOv}){
 }
 
 /* ---- Edit batas anggaran (menggantikan prompt) ---- */
+/* ---- Batas anggaran manual (Anggaran) — TERPISAH dari Budget Matrix ---- */
+function BudgetLimitSheet({ctx,pkey,label,current}){
+  const {store,closeSheet}=ctx;
+  const [val,setVal]=useState(current||0);
+  const save=()=>{ store.setBudgetLimit(pkey,val||0); closeSheet(); toast('Batas anggaran diperbarui'); };
+  const clear=()=>{ store.setBudgetLimit(pkey,0); closeSheet(); toast('Batas anggaran dihapus'); };
+  return h('div',null,[
+    h(SheetHeader,{key:'h',title:'Batas Anggaran'}),
+    h('div',{key:'p',className:'b-sm muted',style:{marginBottom:14,lineHeight:1.5}},`Periode ${label}. Batas belanja periode ini — berdiri sendiri, tak terkait Budget di Matrix. Fungsinya menghitung pengeluaran periode ini: Aman atau sudah Over. Default Rp 0 (nonaktif).`),
+    h('label',{key:'l',className:'label'},'Nominal batas'),
+    h('div',{key:'m',style:{marginBottom:18}},h(MoneyInput,{value:val,onChange:setVal,placeholder:'mis. 5.000.000'})),
+    h('button',{key:'s',className:'btn btn-teal',style:{width:'100%',padding:14,marginBottom:current>0?10:0},onClick:save},'Simpan'),
+    current>0?h('button',{key:'c',className:'btn',style:{width:'100%',padding:12,background:'transparent',color:C.maroon,border:`1.5px solid ${C.maroon}55`},onClick:clear},'Hapus batas (jadikan Rp 0)'):null,
+  ]);
+}
 function BudgetEditSheet({ctx,pkey,label,current}){
   const {store,closeSheet}=ctx;
   const [val,setVal]=useState(current||0);

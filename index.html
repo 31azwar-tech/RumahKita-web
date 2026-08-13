@@ -749,8 +749,13 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.16';
+const APP_VERSION='1.17';
 const CHANGELOG=[
+  {v:'1.17', date:'13 Agu 2026', items:[
+    'Perbaikan KRITIS: data tersimpan yang bisa hilang setelah beberapa saat. Penyebabnya sebagian data (mis. trip baru) gagal tersimpan ke server secara diam-diam karena ada nilai kosong (undefined) yang ditolak Firestore, lalu tertimpa data server. Kini semua nilai kosong dibersihkan sebelum menyimpan, jadi tersimpan andal.',
+    'Kegagalan penyimpanan tak lagi dibisukan — bila ada, tercatat di konsol (diagnostik) alih-alih menghilang tanpa jejak.',
+    'Berlaku untuk semua jenis input: transaksi, plan, kalender/acara, perawatan, goal, jurnal, dan trip.',
+  ]},
   {v:'1.16', date:'12 Agu 2026', items:[
     'Perbaikan: transaksi Travel tak lagi "nyangkut" di trip yang salah. Riwayat transaksi trip hanya memuat transaksi yang tanggalnya di dalam rentang trip.',
     'Saat tanggal trip diubah ke periode lain, transaksi lama yang jadi di luar rentang otomatis dilepas tagnya (kembali dihitung normal di Anggaran).',
@@ -1111,7 +1116,7 @@ const seedTrips=()=>[
       estItems:[{id:'e4',categoryId:'belanja',amount:300000}],
       prep:[{id:'i8',text:'Uang tunai',done:true}]},
    ]},
-  {id:'tr2',dest:'Malang \u2013 Kota Batu',note:'',start:new Date(2026,8,20),end:new Date(2026,8,23),by:'dewi',matrixId:undefined,segments:[]},
+  {id:'tr2',dest:'Malang \u2013 Kota Batu',note:'',start:new Date(2026,8,20),end:new Date(2026,8,23),by:'dewi',segments:[]},
 ];
 
 /* ---------------- Kalkulasi keuangan ---------------- */
@@ -1443,12 +1448,16 @@ function rkDocToObj(id,data){
   return o;
 }
 // Date JS -> Timestamp Firestore (rekursif penuh, simetris dgn rkTsToDate).
+// PENTING: Firestore MENOLAK nilai `undefined` (melempar error → tulisan gagal diam-diam
+// → data hanya ada di localStorage, lalu tertimpa onSnapshot → DATA HILANG).
+// Karena itu di sini kita BUANG setiap field bernilai undefined (rekursif).
 function rkDateToTs(FB,v){
-  if(v==null) return v;
+  if(v===undefined) return undefined; // ditangani pemanggil (di-skip)
+  if(v==null) return v; // null tetap null (valid di Firestore)
   if(v instanceof Date) return FB.Timestamp.fromDate(v);
   if(typeof v==='object' && typeof v.toDate==='function') return v; // sudah Timestamp
-  if(Array.isArray(v)){ var arr=[]; for(var i=0;i<v.length;i++) arr.push(rkDateToTs(FB,v[i])); return arr; }
-  if(typeof v==='object'){ var o={}; for(var k in v){ if(Object.prototype.hasOwnProperty.call(v,k)) o[k]=rkDateToTs(FB,v[k]); } return o; }
+  if(Array.isArray(v)){ var arr=[]; for(var i=0;i<v.length;i++){ var ev=rkDateToTs(FB,v[i]); arr.push(ev===undefined?null:ev); } return arr; }
+  if(typeof v==='object'){ var o={}; for(var k in v){ if(Object.prototype.hasOwnProperty.call(v,k)){ var cv=rkDateToTs(FB,v[k]); if(cv!==undefined) o[k]=cv; } } return o; }
   return v;
 }
 // Date JS -> Timestamp Firestore (untuk seeding/tulis).
@@ -1532,25 +1541,28 @@ function rkAttachFirestore(FB,setState){
 // lalu onSnapshot menyinkronkan ulang. Bila Firebase tak ada, tak melakukan apa-apa
 // (mode offline/localStorage).
 function rkFbBase(){ var FB=window.RKFB; return FB?FB.doc(FB.db,'families',FB.familyId):null; }
+function rkWarn(where,e){ try{ console.error('[RumahKita write fail] '+where, e); window.__rkLastWriteError={where:where,msg:(e&&e.message)||String(e),at:new Date()}; }catch(_){} }
 function rkWriteDoc(coll,id,obj){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
-  try{ FB.setDoc(FB.doc(base,coll,id), rkObjToDoc(FB,obj)); }catch(e){}
+  try{ var p=FB.setDoc(FB.doc(base,coll,id), rkObjToDoc(FB,obj)); if(p&&p.catch) p.catch(function(e){ rkWarn('setDoc '+coll+'/'+id,e); }); }
+  catch(e){ rkWarn('setDoc(sync) '+coll+'/'+id,e); }
 }
 function rkDeleteDoc(coll,id){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
-  try{ FB.deleteDoc(FB.doc(base,coll,id)); }catch(e){}
+  try{ var p=FB.deleteDoc(FB.doc(base,coll,id)); if(p&&p.catch) p.catch(function(e){ rkWarn('deleteDoc '+coll+'/'+id,e); }); }
+  catch(e){ rkWarn('deleteDoc(sync) '+coll+'/'+id,e); }
 }
 function rkWriteBudget(key,amount){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
-  try{ FB.setDoc(FB.doc(base,'monthlyBudget',key), {amount:amount}); }catch(e){}
+  try{ var p=FB.setDoc(FB.doc(base,'monthlyBudget',key), {amount:amount}); if(p&&p.catch) p.catch(function(e){ rkWarn('budget '+key,e); }); }catch(e){ rkWarn('budget(sync) '+key,e); }
 }
 function rkWriteSettings(settings){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
-  try{ FB.setDoc(base, {settings:settings}, {merge:true}); }catch(e){}
+  try{ var clean=rkObjToDoc(FB,{settings:settings}); var p=FB.setDoc(base, clean, {merge:true}); if(p&&p.catch) p.catch(function(e){ rkWarn('settings',e); }); }catch(e){ rkWarn('settings(sync)',e); }
 }
 function rkWriteActivity(rec){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
-  try{ FB.setDoc(FB.doc(base,'activityLog',rec.id), rkObjToDoc(FB,rec)); }catch(e){}
+  try{ var p=FB.setDoc(FB.doc(base,'activityLog',rec.id), rkObjToDoc(FB,rec)); if(p&&p.catch) p.catch(function(e){ rkWarn('activity',e); }); }catch(e){ rkWarn('activity(sync)',e); }
 }
 
 function useStore(){
@@ -5165,7 +5177,7 @@ function TripSheet({ctx,edit}){
     const sD=fromInputDate(start), eD=fromInputDate(end);
     if(eD<sD){toast('Tanggal selesai sebelum mulai');return;}
     if(edit){ store.saveTrip({...edit,dest:dest.trim(),note:note.trim(),start:sD,end:eD,by}); toast('Trip diperbarui'); }
-    else{ const id=newId('tr'); store.saveTrip({id,dest:dest.trim(),note:note.trim(),start:sD,end:eD,by,matrixId:undefined,segments:[]}); toast('Trip dibuat 🎒 — susun agendanya'); window.__openTripId=id; setOverlay(null); setTimeout(()=>setOverlay('trip'),0); }
+    else{ const id=newId('tr'); store.saveTrip({id,dest:dest.trim(),note:note.trim(),start:sD,end:eD,by,segments:[]}); toast('Trip dibuat 🎒 — susun agendanya'); window.__openTripId=id; setOverlay(null); setTimeout(()=>setOverlay('trip'),0); }
     closeSheet();
   };
   return h('div',null,[

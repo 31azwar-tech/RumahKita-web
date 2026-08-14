@@ -656,7 +656,8 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, updatePassword, setPersistence, browserLocalPersistence }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-  import { getFirestore, collection, doc, onSnapshot, setDoc, updateDoc,
+  import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+           collection, doc, onSnapshot, setDoc, updateDoc,
            deleteDoc, addDoc, getDoc, Timestamp }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
@@ -671,7 +672,13 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
 
   const app  = initializeApp(firebaseConfig);
   const auth = getAuth(app);
-  const db   = getFirestore(app);
+  // Firestore dengan cache lokal persisten: tulisan yang tertunda (mis. saat sinyal jelek
+  // atau app ditutup cepat) TIDAK hilang — otomatis dikirim ulang saat online, dan data
+  // lokal tidak "ditimpa kosong" oleh snapshot. Fallback ke getFirestore bila tak didukung.
+  let db;
+  try{
+    db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+  }catch(e){ try{ db = getFirestore(app); }catch(_){ db = getFirestore(app); } }
 
   /* Persistence LOKAL: sesi bertahan antar buka-tutup / pindah app.
      Keamanan dijaga oleh "kunci layar" 1 menit di sisi aplikasi (lihat App/LockScreen):
@@ -749,8 +756,13 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.17';
+const APP_VERSION='1.18';
 const CHANGELOG=[
+  {v:'1.18', date:'13 Agu 2026', items:[
+    'Penyimpanan lebih tangguh: mengaktifkan cache lokal Firestore (persisten). Tulisan yang tertunda (sinyal jelek / app ditutup cepat) kini otomatis dikirim ulang, tidak hilang.',
+    'Rekonsiliasi: bila sebuah data belum sampai ke server saat sinkron, versi lokal dipertahankan & dikirim ulang — bukan ditimpa kosong. Ini mencegah trip/data "hilang diam-diam".',
+    'Baru: Setting → Diagnostik Sinkronisasi. Menguji izin simpan ke server per jenis data, untuk menemukan penyebab bila ada data yang tak tersimpan (mis. Security Rules).',
+  ]},
   {v:'1.17', date:'13 Agu 2026', items:[
     'Perbaikan KRITIS: data tersimpan yang bisa hilang setelah beberapa saat. Penyebabnya sebagian data (mis. trip baru) gagal tersimpan ke server secara diam-diam karena ada nilai kosong (undefined) yang ditolak Firestore, lalu tertimpa data server. Kini semua nilai kosong dibersihkan sebelum menyimpan, jadi tersimpan andal.',
     'Kegagalan penyimpanan tak lagi dibisukan — bila ada, tercatat di konsol (diagnostik) alih-alih menghilang tanpa jejak.',
@@ -1523,12 +1535,24 @@ function rkAttachFirestore(FB,setState){
   // koleksi biasa.
   RK_COLLECTIONS.forEach(function(name){
     unsubs.push(FB.onSnapshot(FB.collection(base,name),function(snap){
-      var rows=[];
-      snap.forEach(function(doc){ rows.push(rkDocToObj(doc.id,doc.data())); });
+      var rows=[]; var serverIds={};
+      snap.forEach(function(doc){ var o=rkDocToObj(doc.id,doc.data()); serverIds[doc.id]=true; rows.push(o); });
       // Pertahanan: transaksi tanpa tanggal valid dibuang agar app tak crash.
       if(name==='transactions'){
         rows=rows.filter(function(r){ return r.date && typeof r.date.getFullYear==='function'; });
       }
+      // REKONSILIASI: bila ada tulisan lokal yang belum dikonfirmasi server (pending) dan
+      // dokumennya TIDAK ada di snapshot server, jangan buang — pertahankan versi lokal &
+      // kirim ulang. Ini mencegah data "hilang" saat tulisan gagal/tertunda lalu snapshot
+      // menimpa. (Hanya untuk pending < 10 menit agar tak menghidupkan item yg sengaja dihapus.)
+      var pend=window.__rkPending[name]||{}; var now=Date.now();
+      for(var pid in pend){ if(Object.prototype.hasOwnProperty.call(pend,pid)){
+        if(serverIds[pid]){ rkPendClear(name,pid); continue; }
+        if(now-pend[pid].ts > 10*60*1000){ rkPendClear(name,pid); continue; }
+        // dokumen pending belum sampai server → simpan lokal & kirim ulang
+        var obj=pend[pid].obj; rows.push(rkTsToDate(rkObjToDoc(FB,obj))); rows[rows.length-1].id=pid;
+        try{ var p=FB.setDoc(FB.doc(base,name,pid), rkObjToDoc(FB,obj)); if(p&&p.then) p.then(function(){},function(e){ rkWarn('resend '+name+'/'+pid,e); }); }catch(_){}
+      }}
       setState(function(s){ var o={}; o[name]=rows; return {...s,...o}; });
     }));
   });
@@ -1541,14 +1565,22 @@ function rkAttachFirestore(FB,setState){
 // lalu onSnapshot menyinkronkan ulang. Bila Firebase tak ada, tak melakukan apa-apa
 // (mode offline/localStorage).
 function rkFbBase(){ var FB=window.RKFB; return FB?FB.doc(FB.db,'families',FB.familyId):null; }
-function rkWarn(where,e){ try{ console.error('[RumahKita write fail] '+where, e); window.__rkLastWriteError={where:where,msg:(e&&e.message)||String(e),at:new Date()}; }catch(_){} }
+// Registry tulisan yang belum dikonfirmasi server + catatan error, untuk diagnostik & rekonsiliasi.
+window.__rkPending = window.__rkPending || {};        // coll -> { id -> {obj, ts} }
+window.__rkWriteErrors = window.__rkWriteErrors || []; // [{where,msg,at}]
+function rkPendAdd(coll,id,obj){ try{ (window.__rkPending[coll]=window.__rkPending[coll]||{})[id]={obj:obj,ts:Date.now()}; }catch(_){} }
+function rkPendClear(coll,id){ try{ if(window.__rkPending[coll]) delete window.__rkPending[coll][id]; }catch(_){} }
+function rkWarn(where,e){ try{ var msg=(e&&e.message)||String(e); console.error('[RumahKita write fail] '+where, e); window.__rkLastWriteError={where:where,msg:msg,at:new Date()}; window.__rkWriteErrors.unshift({where:where,msg:msg,at:new Date()}); window.__rkWriteErrors=window.__rkWriteErrors.slice(0,30); }catch(_){} }
 function rkWriteDoc(coll,id,obj){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
-  try{ var p=FB.setDoc(FB.doc(base,coll,id), rkObjToDoc(FB,obj)); if(p&&p.catch) p.catch(function(e){ rkWarn('setDoc '+coll+'/'+id,e); }); }
+  rkPendAdd(coll,id,obj);
+  try{ var p=FB.setDoc(FB.doc(base,coll,id), rkObjToDoc(FB,obj));
+    if(p&&p.then) p.then(function(){ rkPendClear(coll,id); }, function(e){ rkWarn('setDoc '+coll+'/'+id,e); }); }
   catch(e){ rkWarn('setDoc(sync) '+coll+'/'+id,e); }
 }
 function rkDeleteDoc(coll,id){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
+  rkPendClear(coll,id); // batalkan pending write bila ada
   try{ var p=FB.deleteDoc(FB.doc(base,coll,id)); if(p&&p.catch) p.catch(function(e){ rkWarn('deleteDoc '+coll+'/'+id,e); }); }
   catch(e){ rkWarn('deleteDoc(sync) '+coll+'/'+id,e); }
 }
@@ -1564,6 +1596,25 @@ function rkWriteActivity(rec){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
   try{ var p=FB.setDoc(FB.doc(base,'activityLog',rec.id), rkObjToDoc(FB,rec)); if(p&&p.catch) p.catch(function(e){ rkWarn('activity',e); }); }catch(e){ rkWarn('activity(sync)',e); }
 }
+// Diagnostik: uji tulis 1 dokumen ke tiap koleksi → laporkan koleksi mana yang DITOLAK Rules.
+async function rkDiagnose(){
+  var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return {ok:false,msg:'Firebase belum siap / belum login.'};
+  var results=[];
+  var testColls=RK_COLLECTIONS.concat(['__diag']);
+  for(var i=0;i<testColls.length;i++){
+    var name=testColls[i]; var id='__diagtest';
+    try{
+      await FB.setDoc(FB.doc(base,name,id), {t:FB.Timestamp.fromDate(new Date()), probe:true});
+      try{ await FB.deleteDoc(FB.doc(base,name,id)); }catch(_){}
+      results.push({coll:name, ok:true});
+    }catch(e){ results.push({coll:name, ok:false, msg:(e&&e.code)||(e&&e.message)||String(e)}); }
+  }
+  // uji tulis family doc (settings)
+  try{ await FB.setDoc(base,{__diagPing:FB.Timestamp.fromDate(new Date())},{merge:true}); results.push({coll:'(family doc)',ok:true}); }
+  catch(e){ results.push({coll:'(family doc)',ok:false,msg:(e&&e.code)||(e&&e.message)||String(e)}); }
+  return {ok:true, results:results, uid:(FB.auth&&FB.auth.currentUser&&FB.auth.currentUser.uid)||null};
+}
+window.rkDiagnose=rkDiagnose;
 
 function useStore(){
   const [state,setState]=useState(rkLoadState);
@@ -2223,7 +2274,7 @@ function SheetRouter({sheet,ctx}){
     event:EventSheet, maintenance:MaintenanceSheet, eventCategory:EventCategorySheet,
     journal:JournalSheet, reflection:ReflectionSheet, conversation:ConversationSheet,
     goal:GoalSheet, trip:TripSheet, segment:SegmentSheet, periodEditor:PeriodEditorSheet,
-    budgetEdit:BudgetEditSheet, budgetLimit:BudgetLimitSheet, paydayEdit:PaydayEditSheet, changePw:ChangePwSheet,
+    budgetEdit:BudgetEditSheet, budgetLimit:BudgetLimitSheet, diagnostic:DiagnosticSheet, paydayEdit:PaydayEditSheet, changePw:ChangePwSheet,
     tripExport:TripExportSheet, notif:NotifSheet, cover:CoverSheet, security:SecuritySheet,
     budgetExport:BudgetExportSheet,
   };
@@ -4148,6 +4199,8 @@ function SettingScreen({ctx}){
       h(SettingRow,{key:'pw',icon:'settings',color:C.teal,title:'Ubah kata sandi',onClick:()=>ctx.openSheet('changePw')}),
       h('div',{key:'dal',className:'setdiv'}),
       h(SettingRow,{key:'al',icon:'book',color:C.clay,title:'Log Aktivitas',sub:'Riwayat tambah / ubah / hapus data',onClick:()=>ctx.setOverlay('activity')}),
+      h('div',{key:'ddg',className:'setdiv'}),
+      h(SettingRow,{key:'dg',icon:'settings',color:C.maroon,title:'Diagnostik Sinkronisasi',sub:'Cek koneksi & izin simpan ke server',onClick:()=>ctx.openSheet('diagnostic')}),
       h('div',{key:'d1',className:'setdiv'}),
       h(SettingRow,{key:'bk',icon:'savings',color:C.sage,title:'Export data',sub:'Unduh cadangan (file JSON)',onClick:()=>exportData(store.state)}),
     ]),
@@ -5382,6 +5435,49 @@ function PeriodEditRow({ctx,pkey,start,end,isOv}){
 
 /* ---- Edit batas anggaran (menggantikan prompt) ---- */
 /* ---- Batas anggaran manual (Anggaran) — TERPISAH dari Budget Matrix ---- */
+/* ---- Diagnostik Sinkronisasi: uji izin tulis per koleksi (temukan penyebab data hilang) ---- */
+function DiagnosticSheet({ctx}){
+  const {closeSheet}=ctx;
+  const [running,setRunning]=useState(false);
+  const [res,setRes]=useState(null);
+  const [err,setErr]=useState('');
+  const run=async()=>{
+    setRunning(true); setErr(''); setRes(null);
+    try{
+      if(!window.rkDiagnose){ setErr('Firebase belum termuat.'); setRunning(false); return; }
+      const out=await window.rkDiagnose();
+      if(!out||!out.ok){ setErr((out&&out.msg)||'Gagal menjalankan diagnostik.'); }
+      else setRes(out);
+    }catch(e){ setErr((e&&e.message)||String(e)); }
+    setRunning(false);
+  };
+  const lastErrs=(window.__rkWriteErrors||[]).slice(0,5);
+  return h('div',null,[
+    h(SheetHeader,{key:'h',title:'Diagnostik Sinkronisasi'}),
+    h('div',{key:'p',className:'b-sm muted',style:{marginBottom:14,lineHeight:1.5}},'Menguji apakah aplikasi boleh menyimpan ke server untuk tiap jenis data. Bila ada yang "DITOLAK", biasanya karena Aturan Keamanan (Security Rules) Firestore belum mengizinkan koleksi itu — itulah sebab data seperti trip bisa hilang.'),
+    h('button',{key:'run',className:'btn btn-teal',style:{width:'100%',padding:13,marginBottom:14},disabled:running,onClick:run}, running?'Menguji…':'Jalankan tes'),
+    err?h('div',{key:'e',className:'card',style:{padding:12,marginBottom:12,background:C.expense+'12',color:C.expense,fontSize:13}},err):null,
+    res?h('div',{key:'r'},[
+      res.uid?h('div',{key:'uid',className:'b-xs muted',style:{marginBottom:8,wordBreak:'break-all'}},'UID login: '+res.uid):null,
+      h('div',{key:'list'}, res.results.map((x,i)=>
+        h('div',{key:i,className:'between',style:{padding:'8px 10px',borderBottom:'1px solid var(--line)',fontSize:13}},[
+          h('span',{key:'c',style:{fontWeight:600}}, x.coll),
+          x.ok? h('span',{key:'s',style:{color:C.income,fontWeight:800}},'✓ OK')
+              : h('span',{key:'s',style:{color:C.expense,fontWeight:800,textAlign:'right',maxWidth:'55%',fontSize:11}},'✗ '+(x.msg||'DITOLAK')),
+        ]))),
+      (()=>{ const bad=res.results.filter(x=>!x.ok);
+        return bad.length
+          ? h('div',{key:'hint',className:'card',style:{padding:12,marginTop:12,background:C.clay+'14',fontSize:13,lineHeight:1.5}},
+              'Koleksi yang ditolak: '+bad.map(b=>b.coll).join(', ')+'. Perbaiki di Firebase Console → Firestore → Rules agar koleksi ini diizinkan untuk anggota keluarga. Setelah Rules diperbaiki, buat ulang datanya.')
+          : h('div',{key:'ok',className:'card',style:{padding:12,marginTop:12,background:C.income+'14',color:C.income,fontSize:13,fontWeight:700}},'Semua koleksi bisa disimpan ke server. Sinkronisasi sehat. 🌿');
+      })(),
+    ]):null,
+    lastErrs.length?h('div',{key:'le',style:{marginTop:16}},[
+      h('div',{key:'t',className:'label'},'Error tulis terakhir'),
+      ...lastErrs.map((e,i)=>h('div',{key:i,className:'b-xs muted',style:{padding:'4px 0',wordBreak:'break-all'}},`• ${e.where}: ${e.msg}`)),
+    ]):null,
+  ]);
+}
 function BudgetLimitSheet({ctx,pkey,label,current}){
   const {store,closeSheet}=ctx;
   const [val,setVal]=useState(current||0);

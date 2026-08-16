@@ -678,7 +678,8 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
   let db;
   try{
     db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
-  }catch(e){ try{ db = getFirestore(app); }catch(_){ db = getFirestore(app); } }
+    window.__rkPersistOK = true;
+  }catch(e){ window.__rkPersistOK = false; try{ db = getFirestore(app); }catch(_){ db = getFirestore(app); } }
 
   /* Persistence LOKAL: sesi bertahan antar buka-tutup / pindah app.
      Keamanan dijaga oleh "kunci layar" 1 menit di sisi aplikasi (lihat App/LockScreen):
@@ -756,8 +757,14 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.18';
+const APP_VERSION='1.19';
 const CHANGELOG=[
+  {v:'1.19', date:'16 Agu 2026', items:[
+    'Perbaikan menyeluruh sinkronisasi: menghapus data ganda & data yang seolah hilang lalu muncul lagi. Firestore (dengan cache persisten) kini jadi satu-satunya sumber kebenaran saat login.',
+    'Tak ada lagi "data hantu": data contoh (dummy) tidak lagi muncul di perangkat baru/kosong. Perangkat baru mulai bersih dan terisi dari server.',
+    'Nisan hapus (tombstone): item yang kamu hapus tak akan "hidup lagi" karena balapan sinkronisasi.',
+    'Jaring pengaman penyimpanan disederhanakan agar tak menimbulkan duplikat.',
+  ]},
   {v:'1.18', date:'13 Agu 2026', items:[
     'Penyimpanan lebih tangguh: mengaktifkan cache lokal Firestore (persisten). Tulisan yang tertunda (sinyal jelek / app ditutup cepat) kini otomatis dikirim ulang, tidak hilang.',
     'Rekonsiliasi: bila sebuah data belum sampai ke server saat sinkron, versi lokal dipertahankan & dikirim ulang — bukan ditimpa kosong. Ini mencegah trip/data "hilang diam-diam".',
@@ -1388,6 +1395,21 @@ function Sheet({open,onClose,children}){
 
 /* ================= STORE (state global sederhana) ================= */
 var RK_STORAGE_KEY='rumahkita_state_v1';
+// State KOSONG (tanpa data dummy). Dipakai saat belum ada cache lokal & untuk kerangka
+// merge. Data nyata datang dari Firestore. Ini mencegah "data hantu" (dummy) muncul lalu
+// hilang saat snapshot menimpa, yang dulu membingungkan (mis. transaksi 2jt tiba-tiba ada/hilang).
+function rkEmptyState(){
+  return {
+    categories:seedCategories.map(c=>({...c})), // kategori default tetap ada (bukan transaksi)
+    transactions:[], matrixItems:[], monthlyBudget:{}, goals:[],
+    eventCats:seedEventCats(), events:[], maintenance:[],
+    journal:[], reflections:[], trips:[], activityLog:[],
+    settings:{paydayDefault:28,periodOverrides:{},budgetLimits:{},
+      notif:{enabled:false,events:true,maintenance:true},
+      homeLocation:'', lockSec:60},
+  };
+}
+// Data awal LENGKAP (dgn contoh) — HANYA untuk seeding Firestore pertama kali.
 function rkDefaultState(){
   return {
     // finance
@@ -1427,12 +1449,12 @@ function rkReviveDates(v){
 function rkLoadState(){
   try{
     var raw=window.localStorage.getItem(RK_STORAGE_KEY);
-    if(!raw) return rkDefaultState();
+    if(!raw) return rkEmptyState(); // fresh device → mulai kosong; Firestore mengisi data nyata
     var saved=rkReviveDates(JSON.parse(raw));
-    // Gabung dgn default agar koleksi baru (versi mendatang) tetap ada.
-    var base=rkDefaultState();
+    // Gabung dgn kerangka kosong agar koleksi baru (versi mendatang) tetap ada.
+    var base=rkEmptyState();
     return {...base,...saved,settings:{...base.settings,...(saved.settings||{})}};
-  }catch(e){ return rkDefaultState(); }
+  }catch(e){ return rkEmptyState(); }
 }
 
 /* ================= FIRESTORE (Bagian 8: baca + seeding) ================= */
@@ -1482,7 +1504,9 @@ function rkObjToDoc(FB,obj){
 // Isi Firestore dgn data awal HANYA jika masih kosong (sekali seumur hidup).
 async function rkSeedFirestore(FB){
   var base=FB.doc(FB.db,'families',FB.familyId);
-  var seed=rkDefaultState();
+  // Seed HANYA data pendukung (kategori & kategori acara) + settings. TIDAK menyemai
+  // transaksi/trip/goal contoh, agar keluarga baru mulai bersih tanpa "data hantu".
+  var seed=rkEmptyState();
   // Cek penanda: jika sudah pernah seed, lewati.
   var famSnap=await FB.getDoc(base);
   var fam=(famSnap.exists&&famSnap.exists())?famSnap.data():{};
@@ -1494,15 +1518,10 @@ async function rkSeedFirestore(FB){
     seeded:true,
   },{merge:true});
 
-  // 2) monthlyBudget (map key "YYYY-MM") -> koleksi.
-  var mb=seed.monthlyBudget||{};
-  for(var key in mb){ if(Object.prototype.hasOwnProperty.call(mb,key)){
-    await FB.setDoc(FB.doc(base,'monthlyBudget',key),{amount:mb[key]});
-  }}
-
-  // 3) koleksi lain (pakai id seed sbg id dokumen agar tautan tetap konsisten).
-  for(var c=0;c<RK_COLLECTIONS.length;c++){
-    var name=RK_COLLECTIONS[c];
+  // 2) hanya seed kategori & eventCats (pendukung), tak ada dummy transaksi/trip.
+  var seedColls=['categories','eventCats'];
+  for(var c=0;c<seedColls.length;c++){
+    var name=seedColls[c];
     var rows=seed[name]||[];
     for(var r=0;r<rows.length;r++){
       var row=rows[r];
@@ -1534,25 +1553,32 @@ function rkAttachFirestore(FB,setState){
 
   // koleksi biasa.
   RK_COLLECTIONS.forEach(function(name){
-    unsubs.push(FB.onSnapshot(FB.collection(base,name),function(snap){
+    unsubs.push(FB.onSnapshot(FB.collection(base,name),{includeMetadataChanges:false},function(snap){
       var rows=[]; var serverIds={};
       snap.forEach(function(doc){ var o=rkDocToObj(doc.id,doc.data()); serverIds[doc.id]=true; rows.push(o); });
       // Pertahanan: transaksi tanpa tanggal valid dibuang agar app tak crash.
       if(name==='transactions'){
         rows=rows.filter(function(r){ return r.date && typeof r.date.getFullYear==='function'; });
       }
-      // REKONSILIASI: bila ada tulisan lokal yang belum dikonfirmasi server (pending) dan
-      // dokumennya TIDAK ada di snapshot server, jangan buang — pertahankan versi lokal &
-      // kirim ulang. Ini mencegah data "hilang" saat tulisan gagal/tertunda lalu snapshot
-      // menimpa. (Hanya untuk pending < 10 menit agar tak menghidupkan item yg sengaja dihapus.)
-      var pend=window.__rkPending[name]||{}; var now=Date.now();
-      for(var pid in pend){ if(Object.prototype.hasOwnProperty.call(pend,pid)){
-        if(serverIds[pid]){ rkPendClear(name,pid); continue; }
-        if(now-pend[pid].ts > 10*60*1000){ rkPendClear(name,pid); continue; }
-        // dokumen pending belum sampai server → simpan lokal & kirim ulang
-        var obj=pend[pid].obj; rows.push(rkTsToDate(rkObjToDoc(FB,obj))); rows[rows.length-1].id=pid;
-        try{ var p=FB.setDoc(FB.doc(base,name,pid), rkObjToDoc(FB,obj)); if(p&&p.then) p.then(function(){},function(e){ rkWarn('resend '+name+'/'+pid,e); }); }catch(_){}
-      }}
+      // Tombstone: dokumen yang baru dihapus tak boleh "hidup lagi" akibat balapan snapshot.
+      var tomb=window.__rkTomb[name]||{}; var now=Date.now();
+      rows=rows.filter(function(r){ var t=tomb[r.id]; if(t && now-t<60000){ return false; } if(t){ delete tomb[r.id]; } return true; });
+      // Jaring pengaman (hanya bila cache persisten TIDAK aktif): pending yang belum tampak di
+      // server & masih baru (<2 mnt) dipertahankan agar tak hilang. Dedupe by id mencegah ganda.
+      if(!window.__rkPersistOK){
+        var pend=window.__rkPending[name]||{};
+        for(var pid in pend){ if(Object.prototype.hasOwnProperty.call(pend,pid)){
+          if(serverIds[pid]){ rkPendClear(name,pid); continue; }
+          if(tomb[pid]){ rkPendClear(name,pid); continue; }
+          if(now-pend[pid].ts > 2*60*1000){ rkPendClear(name,pid); continue; }
+          if(!rows.some(function(r){ return r.id===pid; })){
+            var rev=rkTsToDate(rkObjToDoc(FB,pend[pid].obj)); rev.id=pid; rows.push(rev);
+          }
+        }}
+      } else {
+        // cache persisten aktif → snapshot sudah memuat pending; cukup bersihkan registry.
+        var pend2=window.__rkPending[name]; if(pend2){ for(var pid2 in pend2){ if(serverIds[pid2]) rkPendClear(name,pid2); } }
+      }
       setState(function(s){ var o={}; o[name]=rows; return {...s,...o}; });
     }));
   });
@@ -1567,9 +1593,11 @@ function rkAttachFirestore(FB,setState){
 function rkFbBase(){ var FB=window.RKFB; return FB?FB.doc(FB.db,'families',FB.familyId):null; }
 // Registry tulisan yang belum dikonfirmasi server + catatan error, untuk diagnostik & rekonsiliasi.
 window.__rkPending = window.__rkPending || {};        // coll -> { id -> {obj, ts} }
+window.__rkTomb = window.__rkTomb || {};              // coll -> { id -> ts } (nisan hapus)
 window.__rkWriteErrors = window.__rkWriteErrors || []; // [{where,msg,at}]
 function rkPendAdd(coll,id,obj){ try{ (window.__rkPending[coll]=window.__rkPending[coll]||{})[id]={obj:obj,ts:Date.now()}; }catch(_){} }
 function rkPendClear(coll,id){ try{ if(window.__rkPending[coll]) delete window.__rkPending[coll][id]; }catch(_){} }
+function rkTombAdd(coll,id){ try{ (window.__rkTomb[coll]=window.__rkTomb[coll]||{})[id]=Date.now(); }catch(_){} }
 function rkWarn(where,e){ try{ var msg=(e&&e.message)||String(e); console.error('[RumahKita write fail] '+where, e); window.__rkLastWriteError={where:where,msg:msg,at:new Date()}; window.__rkWriteErrors.unshift({where:where,msg:msg,at:new Date()}); window.__rkWriteErrors=window.__rkWriteErrors.slice(0,30); }catch(_){} }
 function rkWriteDoc(coll,id,obj){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
@@ -1580,7 +1608,7 @@ function rkWriteDoc(coll,id,obj){
 }
 function rkDeleteDoc(coll,id){
   var FB=window.RKFB; var base=rkFbBase(); if(!FB||!base) return;
-  rkPendClear(coll,id); // batalkan pending write bila ada
+  rkPendClear(coll,id); rkTombAdd(coll,id); // batalkan pending & tandai nisan agar tak hidup lagi
   try{ var p=FB.deleteDoc(FB.doc(base,coll,id)); if(p&&p.catch) p.catch(function(e){ rkWarn('deleteDoc '+coll+'/'+id,e); }); }
   catch(e){ rkWarn('deleteDoc(sync) '+coll+'/'+id,e); }
 }

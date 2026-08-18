@@ -757,8 +757,13 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.20';
+const APP_VERSION='1.21';
 const CHANGELOG=[
+  {v:'1.21', date:'18 Agu 2026', items:[
+    'Perbaikan AKAR MASALAH data ganda & data lama hilang: ID setiap catatan kini unik global (tak reset antar sesi/perangkat). Sebelumnya ID bisa bentrok sehingga catatan baru menimpa yang lama (mis. "Hailam Acim" hilang) dan tampil ganda saat sinkron.',
+    'Snapshot server dijadikan sumber kebenaran + penyaring anti-duplikat; jaring pengaman lama yang bisa menambah data ganda dihapus.',
+    'Baru: Setting → Diagnostik Sinkronisasi → "Bersihkan duplikat" untuk merapikan transaksi kembar sisa bug lama (sekali klik).',
+  ]},
   {v:'1.20', date:'16 Agu 2026', items:[
     'Perbaikan KRITIS penyebab \"beberapa data teratas bertahan, sisanya hilang\": listener sinkronisasi bisa terpasang ganda saat login, lalu yang basi menimpa data dengan snapshot lama. Kini dijamin hanya SATU listener aktif per akun.',
     'Seeding data pendukung dipindah ke latar belakang agar tak menimbulkan celah balapan saat memasang listener.',
@@ -1274,7 +1279,16 @@ function buildPeriodFeed(s,scope){
   return {a,b,tasks,txs};
 }
 
-let _seq=1000; const newId=p=>`${p}${_seq++}`;
+// ID unik global: waktu (base36) + penghitung + acak. TIDAK reset antar sesi/perangkat,
+// sehingga tak pernah bentrok. Bentrok ID adalah penyebab data saling menimpa (mis. transaksi
+// baru menimpa yang lama di Firestore → data lama hilang) dan tampil ganda saat sinkron.
+let _seq=Math.floor(Math.random()*1000);
+function newId(p){
+  _seq=(_seq+1)%1000000;
+  var t=Date.now().toString(36);
+  var r=Math.floor(Math.random()*1296).toString(36); // 2 char base36
+  return p+t+'-'+_seq.toString(36)+r;
+}
 
 /* Buat item Matrix tertaut dari sumber (acara/perawatan). Default kuadran "Nanti saja". */
 function linkedMatrix(id,title,amount,date,sourceType,sourceId){
@@ -1568,19 +1582,15 @@ function rkAttachFirestore(FB,setState){
       // Tombstone: dokumen yang baru dihapus tak boleh "hidup lagi" akibat balapan snapshot.
       var tomb=window.__rkTomb[name]||{}; var now=Date.now();
       rows=rows.filter(function(r){ var t=tomb[r.id]; if(t && now-t<60000){ return false; } if(t){ delete tomb[r.id]; } return true; });
-      // Jaring pengaman: pending yang belum tampak di snapshot server & masih baru (<2 mnt)
-      // dipertahankan agar tak hilang saat ada snapshot basi. Dedupe by id + tombstone mencegah
-      // duplikat / kebangkitan item terhapus. Dijalankan selalu (aman) sebagai lapis kedua di
-      // atas perbaikan listener-tunggal.
-      var pend=window.__rkPending[name]||{};
-      for(var pid in pend){ if(Object.prototype.hasOwnProperty.call(pend,pid)){
-        if(serverIds[pid]){ rkPendClear(name,pid); continue; }
-        if(tomb[pid]){ rkPendClear(name,pid); continue; }
-        if(now-pend[pid].ts > 2*60*1000){ rkPendClear(name,pid); continue; }
-        if(!rows.some(function(r){ return r.id===pid; })){
-          var rev=rkTsToDate(rkObjToDoc(FB,pend[pid].obj)); rev.id=pid; rows.push(rev);
-        }
-      }}
+      // Dengan cache persisten Firestore + listener tunggal + ID unik global, snapshot sudah
+      // memuat tulisan lokal yang tertunda secara optimistis. Jadi snapshot = sumber kebenaran;
+      // kita TIDAK menambah-ulang dari registry pending (dulu bisa memunculkan data ganda).
+      // Cukup bersihkan registry untuk dokumen yang sudah tampak di server.
+      var pend=window.__rkPending[name];
+      if(pend){ for(var pid in pend){ if(Object.prototype.hasOwnProperty.call(pend,pid) && serverIds[pid]) rkPendClear(name,pid); } }
+      // Dedupe pertahanan terakhir: pastikan tak ada id kembar dalam rows (mis. bila cache & server
+      // sempat mengembalikan entri sama saat transisi). Simpan kemunculan pertama.
+      var seen={}; rows=rows.filter(function(r){ if(seen[r.id]) return false; seen[r.id]=true; return true; });
       setState(function(s){ var o={}; o[name]=rows; return {...s,...o}; });
     }));
   });
@@ -5473,10 +5483,12 @@ function PeriodEditRow({ctx,pkey,start,end,isOv}){
 /* ---- Batas anggaran manual (Anggaran) — TERPISAH dari Budget Matrix ---- */
 /* ---- Diagnostik Sinkronisasi: uji izin tulis per koleksi (temukan penyebab data hilang) ---- */
 function DiagnosticSheet({ctx}){
-  const {closeSheet}=ctx;
+  const {store,closeSheet}=ctx;
   const [running,setRunning]=useState(false);
   const [res,setRes]=useState(null);
   const [err,setErr]=useState('');
+  const [dedupMsg,setDedupMsg]=useState('');
+  const [dedupBusy,setDedupBusy]=useState(false);
   const run=async()=>{
     setRunning(true); setErr(''); setRes(null);
     try{
@@ -5486,6 +5498,25 @@ function DiagnosticSheet({ctx}){
       else setRes(out);
     }catch(e){ setErr((e&&e.message)||String(e)); }
     setRunning(false);
+  };
+  // Bersihkan transaksi duplikat (akibat bug ID lama): sama catatan+jumlah+tanggal+akun.
+  const dedup=()=>{
+    ctx.confirm({title:'Bersihkan duplikat?',message:'Menghapus transaksi kembar (catatan, jumlah, tanggal, dan akun sama) — menyisakan satu. Aksi ini permanen.',danger:true,confirmLabel:'Bersihkan',onConfirm:async()=>{
+      setDedupBusy(true); setDedupMsg('');
+      try{
+        const txs=store.state.transactions||[];
+        const seen={}; const dupIds=[];
+        // urut stabil: id lama (pendek) diprioritaskan tetap ada
+        [...txs].forEach(t=>{
+          const d=asDate(t.date); const dk=d?`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`:'?';
+          const key=`${(t.note||'').trim().toLowerCase()}|${t.amount}|${dk}|${t.by||''}|${t.categoryId||''}|${t.tripId||''}`;
+          if(seen[key]) dupIds.push(t.id); else seen[key]=t.id;
+        });
+        dupIds.forEach(id=>store.deleteTx(id));
+        setDedupMsg(dupIds.length?`${dupIds.length} transaksi duplikat dihapus.`:'Tidak ada duplikat ditemukan. 🌿');
+      }catch(e){ setDedupMsg('Gagal: '+((e&&e.message)||e)); }
+      setDedupBusy(false);
+    }});
   };
   const lastErrs=(window.__rkWriteErrors||[]).slice(0,5);
   return h('div',null,[
@@ -5512,6 +5543,12 @@ function DiagnosticSheet({ctx}){
       h('div',{key:'t',className:'label'},'Error tulis terakhir'),
       ...lastErrs.map((e,i)=>h('div',{key:i,className:'b-xs muted',style:{padding:'4px 0',wordBreak:'break-all'}},`• ${e.where}: ${e.msg}`)),
     ]):null,
+    h('div',{key:'ddsec',style:{marginTop:20,paddingTop:16,borderTop:'1px solid var(--line)'}},[
+      h('div',{key:'t',className:'label'},'Bersihkan transaksi duplikat'),
+      h('div',{key:'d',className:'b-xs muted',style:{marginBottom:10,lineHeight:1.5}},'Menghapus transaksi kembar dari bug versi lama (catatan, jumlah, tanggal, & akun sama) — menyisakan satu.'),
+      h('button',{key:'b',className:'btn',style:{width:'100%',padding:12,background:C.clay+'18',color:C.clay,border:`1.5px solid ${C.clay}55`,fontWeight:700},disabled:dedupBusy,onClick:dedup}, dedupBusy?'Membersihkan…':'Bersihkan duplikat'),
+      dedupMsg?h('div',{key:'m',className:'b-sm',style:{marginTop:10,color:C.income,fontWeight:600}},dedupMsg):null,
+    ]),
   ]);
 }
 function BudgetLimitSheet({ctx,pkey,label,current}){

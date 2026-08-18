@@ -757,8 +757,13 @@ const TODAY = new Date(FIN_TODAY.getFullYear(),FIN_TODAY.getMonth(),FIN_TODAY.ge
 const todayD = new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
 
 /* ---------------- Versi & catatan perubahan ---------------- */
-const APP_VERSION='1.19';
+const APP_VERSION='1.20';
 const CHANGELOG=[
+  {v:'1.20', date:'16 Agu 2026', items:[
+    'Perbaikan KRITIS penyebab \"beberapa data teratas bertahan, sisanya hilang\": listener sinkronisasi bisa terpasang ganda saat login, lalu yang basi menimpa data dengan snapshot lama. Kini dijamin hanya SATU listener aktif per akun.',
+    'Seeding data pendukung dipindah ke latar belakang agar tak menimbulkan celah balapan saat memasang listener.',
+    'Jaring pengaman kedua: data yang baru kamu input dipertahankan bila ada snapshot basi (dengan pencegah duplikat & pencegah kebangkitan item terhapus).',
+  ]},
   {v:'1.19', date:'16 Agu 2026', items:[
     'Perbaikan menyeluruh sinkronisasi: menghapus data ganda & data yang seolah hilang lalu muncul lagi. Firestore (dengan cache persisten) kini jadi satu-satunya sumber kebenaran saat login.',
     'Tak ada lagi "data hantu": data contoh (dummy) tidak lagi muncul di perangkat baru/kosong. Perangkat baru mulai bersih dan terisi dari server.',
@@ -1563,22 +1568,19 @@ function rkAttachFirestore(FB,setState){
       // Tombstone: dokumen yang baru dihapus tak boleh "hidup lagi" akibat balapan snapshot.
       var tomb=window.__rkTomb[name]||{}; var now=Date.now();
       rows=rows.filter(function(r){ var t=tomb[r.id]; if(t && now-t<60000){ return false; } if(t){ delete tomb[r.id]; } return true; });
-      // Jaring pengaman (hanya bila cache persisten TIDAK aktif): pending yang belum tampak di
-      // server & masih baru (<2 mnt) dipertahankan agar tak hilang. Dedupe by id mencegah ganda.
-      if(!window.__rkPersistOK){
-        var pend=window.__rkPending[name]||{};
-        for(var pid in pend){ if(Object.prototype.hasOwnProperty.call(pend,pid)){
-          if(serverIds[pid]){ rkPendClear(name,pid); continue; }
-          if(tomb[pid]){ rkPendClear(name,pid); continue; }
-          if(now-pend[pid].ts > 2*60*1000){ rkPendClear(name,pid); continue; }
-          if(!rows.some(function(r){ return r.id===pid; })){
-            var rev=rkTsToDate(rkObjToDoc(FB,pend[pid].obj)); rev.id=pid; rows.push(rev);
-          }
-        }}
-      } else {
-        // cache persisten aktif → snapshot sudah memuat pending; cukup bersihkan registry.
-        var pend2=window.__rkPending[name]; if(pend2){ for(var pid2 in pend2){ if(serverIds[pid2]) rkPendClear(name,pid2); } }
-      }
+      // Jaring pengaman: pending yang belum tampak di snapshot server & masih baru (<2 mnt)
+      // dipertahankan agar tak hilang saat ada snapshot basi. Dedupe by id + tombstone mencegah
+      // duplikat / kebangkitan item terhapus. Dijalankan selalu (aman) sebagai lapis kedua di
+      // atas perbaikan listener-tunggal.
+      var pend=window.__rkPending[name]||{};
+      for(var pid in pend){ if(Object.prototype.hasOwnProperty.call(pend,pid)){
+        if(serverIds[pid]){ rkPendClear(name,pid); continue; }
+        if(tomb[pid]){ rkPendClear(name,pid); continue; }
+        if(now-pend[pid].ts > 2*60*1000){ rkPendClear(name,pid); continue; }
+        if(!rows.some(function(r){ return r.id===pid; })){
+          var rev=rkTsToDate(rkObjToDoc(FB,pend[pid].obj)); rev.id=pid; rows.push(rev);
+        }
+      }}
       setState(function(s){ var o={}; o[name]=rows; return {...s,...o}; });
     }));
   });
@@ -1652,19 +1654,25 @@ function useStore(){
   },[state]);
   const up=fn=>setState(s=>({...s,...fn(s)}));
 
-  // Bagian 8: saat Firebase & login siap → seed (sekali) lalu dengarkan Firestore.
+  // Bagian 8: saat Firebase & login siap → dengarkan Firestore (SATU listener saja).
+  // PERBAIKAN: onAuthStateChanged bisa menyala >1x berdekatan; dengan await di tengah,
+  // dua panggilan bisa memasang listener ganda → listener basi menimpa data dgn snapshot
+  // lama (\"hanya beberapa data teratas bertahan\"). Kini attach dijaga: hanya sekali per uid,
+  // dan seeding dijalankan di latar (tidak menahan/attach), sehingga tak ada celah balapan.
   useEffect(()=>{
-    var detach=null, alive=true;
+    var detach=null, alive=true, attachedUid=null, seeding=false;
     function start(){
       var FB=window.RKFB;
       if(!FB) return;
-      // tunggu user login dulu (Rules butuh auth).
-      var off=FB.onAuthStateChanged(FB.auth, async function(user){
-        if(!user||!alive) return;
-        try{ await rkSeedFirestore(FB); }catch(e){ /* diamkan; listener tetap jalan */ }
+      var off=FB.onAuthStateChanged(FB.auth, function(user){
         if(!alive) return;
-        if(detach) detach();
-        detach=rkAttachFirestore(FB,setState);
+        if(!user){ if(detach){ detach(); detach=null; } attachedUid=null; return; }
+        if(attachedUid===user.uid && detach) return;   // sudah terpasang utk user ini → jangan pasang lagi
+        if(detach){ detach(); detach=null; }            // ganti user → lepas listener lama
+        attachedUid=user.uid;
+        detach=rkAttachFirestore(FB,setState);          // pasang SEKALI, sinkron (tanpa await sebelum ini)
+        // Seed data pendukung di latar belakang (tak menahan listener; aman diulang krn ada flag 'seeded').
+        if(!seeding){ seeding=true; Promise.resolve().then(function(){ return rkSeedFirestore(FB); }).catch(function(){}).then(function(){ seeding=false; }); }
       });
       return off;
     }

@@ -1211,8 +1211,9 @@ function makeCalc(state){
   const cukupHari=({year,month,budgetBelanja,today,lajuManual})=>{
     const {start}=periodRange(state,year,month);
     const txb=txInMonth(year,month);
-    let totalPeng=0; txb.forEach(t=>{if(isExpense(t))totalPeng+=t.amount;});
-    const sisa=budgetBelanja-totalPeng;
+    let totalPeng=0,totalInc=0; txb.forEach(t=>{if(isExpense(t))totalPeng+=t.amount;else if(isIncome(t))totalInc+=t.amount;});
+    const budgetEff=(budgetBelanja&&budgetBelanja>0)?budgetBelanja:totalInc;
+    const sisa=budgetEff-totalPeng;
     const dailyCats=state.categories.filter(c=>c.countsAsDaily);
     const dailyIds=new Set(dailyCats.map(c=>c.id));
     let konsumsi=0; txb.forEach(t=>{if(dailyIds.has(t.categoryId))konsumsi+=t.amount;});
@@ -2530,7 +2531,7 @@ function EmptyTab({title,body}){
 
 function CukupCard({compute}){
   const [val,setVal]=useState('');
-  const manual=val?parseThousand(val):null;
+  const manual=(val&&parseThousand(val)>0)?parseThousand(val):null;
   const r=compute(manual);
   return h('div',{style:{background:'var(--surface)',borderRadius:22,padding:16,border:`1px solid ${C.gold}59`,boxShadow:'var(--shadow)'}},[
     h('div',{key:'top',className:'row gap12',style:{alignItems:'center'}},[
